@@ -131,7 +131,6 @@ try:
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
-    from webdriver_manager.chrome import ChromeDriverManager
     from fake_useragent import UserAgent
 except ImportError as e:
     print(f"Selenium import error: {e}\n   Instaleaza: pip install selenium webdriver-manager fake-useragent")
@@ -772,8 +771,8 @@ class OLXScrapingEngine:
                      "profile.default_content_settings.popups": 0,
                      "profile.default_content_setting_values.notifications": 2}
             chrome_options.add_experimental_option("prefs", prefs)
-            service = Service(ChromeDriverManager().install())
-            self.driver = webdriver.Chrome(service=service, options=chrome_options)
+            # Use system ChromeDriver (installed by GitHub Actions)
+            self.driver = webdriver.Chrome(options=chrome_options)
             self.logger.info("Chrome driver ready")
             return True
         except Exception as e:
@@ -2216,3 +2215,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
