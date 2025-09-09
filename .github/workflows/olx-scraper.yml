@@ -46,7 +46,7 @@ jobs:
     - name: Create GitHub config
       run: |
         echo "Creating GitHub config..."
-        echo "Token length: ${#GITHUB_TOKEN}"
+        echo "Token length: ${#GITHUBTOKEN}"
         cat > github-config.json << 'EOF'
         {
           "username": "miqq27",
