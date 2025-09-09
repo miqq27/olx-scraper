@@ -45,6 +45,8 @@ jobs:
         
     - name: Create GitHub config
       run: |
+        echo "Creating GitHub config..."
+        echo "Token length: ${#GITHUB_TOKEN}"
         cat > github-config.json << 'EOF'
         {
           "username": "miqq27",
@@ -52,6 +54,10 @@ jobs:
           "token": "${{ secrets.GITHUB_TOKEN }}"
         }
         EOF
+        echo "Config file created:"
+        ls -la github-config.json
+        echo "Config content (masked):"
+        jq '.username, .repo, (.token | length)' github-config.json
         
     - name: Run scraper
       run: |
