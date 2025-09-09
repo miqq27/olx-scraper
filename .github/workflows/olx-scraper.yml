@@ -35,24 +35,35 @@ jobs:
     - name: Start Xvfb
       run: |
         Xvfb :99 -screen 0 1024x768x24 > /dev/null 2>&1 &
+        sleep 2
         
-    - name: Install Chrome
+    - name: Install Chrome and ChromeDriver
       run: |
+        # Install Chrome
         wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
         echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
         sudo apt-get update
         sudo apt-get install -y google-chrome-stable
         
-    - name: Install Python dependencies
+        # Install ChromeDriver manually
+        CHROME_VERSION=$(google-chrome --version | cut -d " " -f3 | cut -d "." -f1)
+        CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION}")
+        wget -N "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip"
+        unzip chromedriver_linux64.zip
+        sudo mv chromedriver /usr/local/bin/chromedriver
+        sudo chmod +x /usr/local/bin/chromedriver
+        
+    - name: Install Python dependencies  
       run: |
         pip install --upgrade pip
-        pip install selenium==4.15.0 beautifulsoup4==4.12.2 requests==2.31.0 pandas==2.1.3 openpyxl==3.1.2 lxml==4.9.3 fake-useragent==1.4.0 webdriver-manager==4.0.1
+        pip install selenium==4.15.0 beautifulsoup4==4.12.2 requests==2.31.0 pandas==2.1.3 openpyxl==3.1.2 lxml==4.9.3 fake-useragent==1.4.0
         
     - name: Run scraper
       run: |
         python scraper_dev_backup.py --config '${{ github.event.inputs.config }}' --session-id '${{ github.event.inputs.session_id }}'
       env:
         DISPLAY: :99
+        PATH: /usr/local/bin:$PATH
         
     - name: Upload results
       uses: actions/upload-artifact@v4
