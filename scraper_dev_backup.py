@@ -60,6 +60,33 @@ try:
 except ImportError as e:
     print(f"BeautifulSoup import error: {e}\n   Instalează: pip install beautifulsoup4")
     sys.exit(1)
+# ---------- GitHub Actions Support ----------
+def parse_github_action_args():
+    """Parse arguments from GitHub Actions workflow"""
+    parser = argparse.ArgumentParser(description='OLX Scraper for GitHub Actions')
+    parser.add_argument('--config', type=str, help='JSON configuration string')
+    parser.add_argument('--session-id', type=str, help='Session ID for tracking')
+    return parser.parse_args()
+
+# Check if running from GitHub Actions
+github_mode = False
+session_id = None
+if '--config' in sys.argv:
+    try:
+        args = parse_github_action_args()
+        github_config = json.loads(args.config)
+        session_id = args.session_id
+        github_mode = True
+        
+        print(f"[GITHUB] Running GitHub Actions session: {session_id}")
+        print(f"[GITHUB] Config received: {github_config}")
+        
+        # TODO: Convert github_config to SearchConfig and run scraper headless
+        # This will be implemented after we test the workflow
+        
+    except Exception as e:
+        print(f"[GITHUB] Error parsing GitHub Actions args: {e}")
+        github_mode = False
 
 # ---------- Config ----------
 # Handle paths for both development and .exe environments
@@ -1943,3 +1970,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
