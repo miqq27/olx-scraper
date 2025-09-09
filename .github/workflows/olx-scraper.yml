@@ -43,6 +43,16 @@ jobs:
         pip install --upgrade pip
         pip install selenium==4.15.0 beautifulsoup4==4.12.2 requests==2.31.0 pandas==2.1.3 openpyxl==3.1.2 lxml==4.9.3 fake-useragent==1.4.0
         
+    - name: Create GitHub config
+      run: |
+        cat > github-config.json << 'EOF'
+        {
+          "username": "miqq27",
+          "repo": "olx-csv-data",
+          "token": "ghp_cqyH9iB3GtSLfODzNTYXQdFkd3VQIl4PmGqf"
+        }
+        EOF
+        
     - name: Run scraper
       run: |
         python scraper_dev_backup.py --config '${{ github.event.inputs.config }}' --session-id '${{ github.event.inputs.session_id }}'
@@ -53,5 +63,5 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: scraping-results-${{ github.event.inputs.session_id }}
-        path: "*.csv"
+        path: "olx_results/*"
         if-no-files-found: warn
