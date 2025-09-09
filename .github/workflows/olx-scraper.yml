@@ -49,7 +49,7 @@ jobs:
         {
           "username": "miqq27",
           "repo": "olx-csv-data",
-          "token": "ghp_cqyH9iB3GtSLfODzNTYXQdFkd3VQIl4PmGqf"
+          "token": "${{ secrets.GITHUB_TOKEN }}"
         }
         EOF
         
