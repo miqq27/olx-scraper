@@ -2112,6 +2112,39 @@ def run_headless_scraper():
         print(f"[SUCCESS] Scraping completed! Found {len(cars_data)} cars")
         logger.info(f"Scraping completed successfully: {len(cars_data)} cars found")
         
+        # DEBUG: Check for GitHub config file
+        print("\n[DEBUG] Checking for GitHub config...")
+        config_files = ["github-config.json", "olx_results/github-config.json", 
+                       os.path.join(args.output_dir, "github-config.json")]
+        github_config_path = None
+
+        for path in config_files:
+            if os.path.exists(path):
+                github_config_path = path
+                print(f"[CONFIG] Found config at: {path}")
+                try:
+                    with open(path, 'r') as f:
+                        config_content = json.load(f)
+                    print(f"[CONFIG] Username: {config_content.get('username', 'MISSING')}")
+                    print(f"[CONFIG] Repo: {config_content.get('repo', 'MISSING')}")
+                    print(f"[CONFIG] Token length: {len(config_content.get('token', ''))}")
+                except Exception as e:
+                    print(f"[CONFIG] Error reading config: {e}")
+                break
+
+        if not github_config_path:
+            print("[ERROR] github-config.json not found in any location")
+            print(f"[DEBUG] Current directory: {os.getcwd()}")
+            print(f"[DEBUG] Files in current dir: {os.listdir('.')}")
+            if os.path.exists(args.output_dir):
+                print(f"[DEBUG] Files in output dir: {os.listdir(args.output_dir)}")
+        
+        # Save results with session ID
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        # Prepare data for export (same format as GUI)
+        export_data = []
+        
         # Save results with session ID
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         
@@ -2140,6 +2173,31 @@ def run_headless_scraper():
         df = pd.DataFrame(export_data)
         csv_file = os.path.join(args.output_dir, f'olx_results_{args.session_id}_{timestamp}.csv')
         df.to_csv(csv_file, index=False, encoding='utf-8')
+        
+        # Test GitHub upload
+        if github_config_path:
+            print(f"\n[UPLOAD] Attempting GitHub upload...")
+            try:
+                with open(github_config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                
+                github_uploader = GitHubUploader(
+                    username=config['username'],
+                    repo=config['repo'],
+                    token=config['token']
+                )
+                
+                github_url = github_uploader.upload_csv_to_github(csv_file, len(cars_data))
+                
+                if github_url:
+                    print(f"[SUCCESS] GitHub upload successful: {github_url}")
+                else:
+                    print(f"[FAILED] GitHub upload failed")
+                    
+            except Exception as e:
+                print(f"[ERROR] GitHub upload exception: {e}")
+        else:
+            print(f"[SKIP] No GitHub config found, skipping upload")
         
         # Save as JSON for backup
         json_file = os.path.join(args.output_dir, f'olx_results_{args.session_id}_{timestamp}.json')
@@ -2215,4 +2273,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
