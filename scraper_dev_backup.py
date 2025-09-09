@@ -939,21 +939,56 @@ class OLXScrapingEngine:
     def save_duplicate_database(self, new_cars: List[CarData]):
         db_file = os.path.join(RESULTS_DIR, 'cars_database.json')
         try:
+            # CRITICAL: Preserve all existing database entries
+            original_size = len(self.duplicate_db)
+            new_entries = 0
+            updated_entries = 0
+            
+            self.logger.info(f"Merging {len(new_cars)} scraped cars with existing database of {original_size} cars")
+            
             for car in new_cars:
-                prev = self.duplicate_db.get(car.unique_id, {})
-                first_seen = prev.get('first_seen', car.scrape_date)
-                self.duplicate_db[car.unique_id] = {
-                    'title': car.title,
-                    'link': car.link,
-                    'first_seen': first_seen,
-                    'last_seen': car.scrape_date,
-                    'last_price': float(car.price_numeric),
-                    'last_price_text': car.price_text,
-                }
+                car_id = car.unique_id
+                
+                if car_id in self.duplicate_db:
+                    # Existing car - preserve first_seen, only update last_seen and price
+                    existing_entry = self.duplicate_db[car_id]
+                    self.duplicate_db[car_id] = {
+                        'title': car.title,  # May update title if slightly different
+                        'link': car.link,
+                        'first_seen': existing_entry.get('first_seen', car.scrape_date),  # PRESERVE original
+                        'last_seen': car.scrape_date,  # UPDATE to latest
+                        'last_price': float(car.price_numeric),  # UPDATE price
+                        'last_price_text': car.price_text,  # UPDATE price text
+                    }
+                    updated_entries += 1
+                else:
+                    # New car - add complete entry
+                    self.duplicate_db[car_id] = {
+                        'title': car.title,
+                        'link': car.link,
+                        'first_seen': car.scrape_date,
+                        'last_seen': car.scrape_date,
+                        'last_price': float(car.price_numeric),
+                        'last_price_text': car.price_text,
+                    }
+                    new_entries += 1
+            
+            final_size = len(self.duplicate_db)
+            
+            # SAFETY CHECK: Database should never shrink
+            if final_size < original_size:
+                raise Exception(f"CRITICAL ERROR: Database shrunk from {original_size} to {final_size} cars! Data loss detected!")
+            
+            # Save the merged database
             with open(db_file, 'w', encoding='utf-8') as f:
                 json.dump({'cars': self.duplicate_db}, f, ensure_ascii=False, indent=2)
+            
+            self.logger.info(f"Database merge complete: {original_size} -> {final_size} cars ({new_entries} new, {updated_entries} updated)")
+            
         except Exception as e:
             self.logger.error(f"DB save fail: {e}")
+            # CRITICAL: Re-raise to prevent data loss
+            raise
 
     
     def is_duplicate(self, link: str, title: str = "", current_price: Optional[float] = None) -> bool:
@@ -976,6 +1011,59 @@ class OLXScrapingEngine:
 
         self.session_stats['duplicates'] += 1
         return True
+    
+    def filter_duplicates(self, cars_data: List[CarData]) -> List[CarData]:
+        """Filter out duplicate cars from scraped data based on database
+        
+        Args:
+            cars_data: List of all scraped cars
+            
+        Returns:
+            List of non-duplicate cars (new cars or price changes >1 EUR)
+        """
+        filtered_cars = []
+        duplicate_count = 0
+        new_count = 0
+        price_change_count = 0
+        
+        self.logger.info(f"Filtering {len(cars_data)} scraped cars for duplicates...")
+        
+        for car in cars_data:
+            # Use the car's unique_id directly instead of regenerating it
+            cid = car.unique_id
+            rec = self.duplicate_db.get(cid)
+            
+            if not rec:
+                # New car not in database
+                filtered_cars.append(car)
+                new_count += 1
+            else:
+                # Car exists in database - check for price change
+                try:
+                    if car.price_numeric is not None and 'last_price' in rec:
+                        if abs(float(car.price_numeric) - float(rec['last_price'])) >= PRICE_CHANGE_THRESHOLD:
+                            # Price changed by more than threshold
+                            filtered_cars.append(car)
+                            price_change_count += 1
+                            old_price = rec.get('last_price', 0)
+                            self.logger.info(f"Price change detected for {car.title}: {old_price} -> {car.price_numeric}")
+                        else:
+                            # Duplicate with no significant price change
+                            duplicate_count += 1
+                    else:
+                        # No price to compare, treat as duplicate
+                        duplicate_count += 1
+                except:
+                    # Error in price comparison, treat as duplicate
+                    duplicate_count += 1
+        
+        self.logger.info(f"Filtering complete: {len(filtered_cars)} cars kept ({new_count} new, {price_change_count} price changes), {duplicate_count} duplicates removed")
+        
+        # Update session stats
+        self.session_stats['duplicates'] = duplicate_count
+        self.session_stats['new_cars'] = new_count
+        
+        return filtered_cars
 
     
     def setup_driver(self):
@@ -1240,21 +1328,18 @@ class OLXScrapingEngine:
                     time.sleep(2)
                     page_cars = self.extract_cars_from_page()
 
-                # Duplicates
-                new_page = [c for c in page_cars if not self.is_duplicate(
-                        c.get('link',''), c.get('title',''), c.get('price_numeric'))]
-
+                # NO DUPLICATE CHECKING DURING SCRAPING - collect all cars
                 # Filtru MODELE pt. marca curentă (client-side)
                 wanted_models = config.models_by_brand.get(brand, [])
                 if wanted_models and "Toate modelele" not in wanted_models:
                     filtered = []
-                    for c in new_page:
+                    for c in page_cars:
                         _, mdl = self.extract_brand_and_model_from_title(c.get('title',''))
                         if (mdl in wanted_models) or ("Altul" in wanted_models and mdl == "Unknown"):
                             filtered.append(c)
-                    new_page = filtered
-                all_cars.extend(new_page)
-                self.logger.info(f"{brand} p{page}: {len(new_page)}/{len(page_cars)} new (kept after filters)")
+                    page_cars = filtered
+                all_cars.extend(page_cars)
+                self.logger.info(f"{brand} p{page}: {len(page_cars)} cars found")
                 if page < config.max_pages_per_brand:
                     if not self.go_to_next_page():
                         self.logger.info(f"{brand}: no more pages")
@@ -2318,11 +2403,28 @@ def run_headless_scraper():
         # Set headless mode
         engine.headless = True
         
-        # Sync database from GitHub before scraping
+        # DON'T load database before scraping - let it collect ALL cars
+        print("[WORKFLOW] Step 1: Complete scraping WITHOUT duplicate checking...")
+        
+        # Run the scraper to collect ALL cars (no duplicate filtering)
+        print("Starting car scraping process...")
+        all_scraped_cars = engine.scrape_all_cars(search_config)
+        
+        if not all_scraped_cars:
+            print("WARNING: No cars found matching the criteria")
+            logger.warning("No cars found")
+            return False
+            
+        print(f"[WORKFLOW] Step 1 Complete: Scraped {len(all_scraped_cars)} total cars")
+        logger.info(f"Scraping completed: {len(all_scraped_cars)} total cars collected")
+        
+        # Step 2: Download database from GitHub for duplicate detection
+        print("\n[WORKFLOW] Step 2: Download database from GitHub...")
+        
         github_config_path = None
         github_db_sync = None
         
-        # Find GitHub config first
+        # Find GitHub config
         config_files = ["github-config.json", "github_config.json", 
                        os.path.join(args.output_dir, "github-config.json")]
         
@@ -2333,9 +2435,12 @@ def run_headless_scraper():
         
         if github_config_path:
             try:
-                print("\n[DB SYNC] Initializing database sync...")
+                print("[DB SYNC] Loading GitHub configuration...")
                 with open(github_config_path, 'r', encoding='utf-8') as f:
                     github_config = json.load(f)
+                
+                print(f"[CONFIG] Username: {github_config.get('username', 'MISSING')}")
+                print(f"[CONFIG] Data repo: olx-csv-data")
                 
                 # Initialize database sync
                 github_db_sync = GitHubDatabaseSync(
@@ -2346,56 +2451,35 @@ def run_headless_scraper():
                 
                 # Download the database
                 if github_db_sync.download_database():
-                    print("[DB SYNC] Database sync successful, reloading duplicate database...")
+                    print("[DB SYNC] Database downloaded successfully")
                     # Reload the database in the engine
                     engine.load_duplicate_database()
+                    print(f"[DB SYNC] Loaded {len(engine.duplicate_db)} existing cars from GitHub database")
                 else:
                     print("[DB SYNC] Database download failed, using local database if available")
+                    engine.load_duplicate_database()
+                    print(f"[DB SYNC] Using local database with {len(engine.duplicate_db)} cars")
                     
             except Exception as e:
                 print(f"[DB SYNC] Error during database sync: {e}")
                 logger.warning(f"Database sync error: {e}")
+                engine.load_duplicate_database()
         else:
             print("[DB SYNC] No GitHub config found, using local database only")
+            engine.load_duplicate_database()
         
-        # Run the scraper using existing engine
-        print("Starting car scraping process...")
-        cars_data = engine.scrape_all_cars(search_config)
+        # Step 3: Filter duplicates from scraped data
+        print("\n[WORKFLOW] Step 3: Filter duplicates from scraped data...")
+        cars_data = engine.filter_duplicates(all_scraped_cars)
         
-        if not cars_data:
-            print("WARNING: No cars found matching the criteria")
-            logger.warning("No cars found")
-            return False
-            
-        print(f"[SUCCESS] Scraping completed! Found {len(cars_data)} cars")
-        logger.info(f"Scraping completed successfully: {len(cars_data)} cars found")
+        print(f"[WORKFLOW] Step 3 Complete: {len(cars_data)} non-duplicate cars (from {len(all_scraped_cars)} total)")
         
-        # DEBUG: Check for GitHub config file
-        print("\n[DEBUG] Checking for GitHub config...")
-        config_files = ["github-config.json", "olx_results/github-config.json", 
-                       os.path.join(args.output_dir, "github-config.json")]
-        github_config_path = None
-
-        for path in config_files:
-            if os.path.exists(path):
-                github_config_path = path
-                print(f"[CONFIG] Found config at: {path}")
-                try:
-                    with open(path, 'r') as f:
-                        config_content = json.load(f)
-                    print(f"[CONFIG] Username: {config_content.get('username', 'MISSING')}")
-                    print(f"[CONFIG] Repo: {config_content.get('repo', 'MISSING')}")
-                    print(f"[CONFIG] Token length: {len(config_content.get('token', ''))}")
-                except Exception as e:
-                    print(f"[CONFIG] Error reading config: {e}")
-                break
-
-        if not github_config_path:
-            print("[ERROR] github-config.json not found in any location")
-            print(f"[DEBUG] Current directory: {os.getcwd()}")
-            print(f"[DEBUG] Files in current dir: {os.listdir('.')}")
-            if os.path.exists(args.output_dir):
-                print(f"[DEBUG] Files in output dir: {os.listdir(args.output_dir)}")
+        # Step 4: Update database with ALL scraped cars (including duplicates for price tracking)
+        print("\n[WORKFLOW] Step 4: Update database with scraped data...")
+        before_size = len(engine.duplicate_db)
+        engine.save_duplicate_database(all_scraped_cars)
+        after_size = len(engine.duplicate_db)
+        print(f"[WORKFLOW] Step 4 Complete: Database updated from {before_size} to {after_size} cars (+{after_size - before_size})")
         
         # Save results with session ID
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -2432,21 +2516,23 @@ def run_headless_scraper():
         csv_file = os.path.join(args.output_dir, f'olx_results_{args.session_id}_{timestamp}.csv')
         df.to_csv(csv_file, index=False, encoding='utf-8')
         
-        # Upload database to GitHub BEFORE uploading CSV
+        # Step 5: Upload database to GitHub BEFORE uploading CSV
+        print("\n[WORKFLOW] Step 5: Upload updated database to GitHub...")
         if github_db_sync:
             try:
-                print("\n[DB SYNC] Uploading updated database to GitHub...")
                 if github_db_sync.upload_database(session_id=args.session_id):
-                    print("[DB SYNC] Database uploaded successfully to GitHub")
+                    print("[WORKFLOW] Step 5 Complete: Database uploaded to GitHub")
                 else:
-                    print("[DB SYNC] Database upload failed - duplicate detection may not work next run")
+                    print("[WORKFLOW] Step 5 Failed: Database upload failed - duplicate detection may not work next run")
             except Exception as e:
-                print(f"[DB SYNC] Error uploading database: {e}")
+                print(f"[WORKFLOW] Step 5 Error: {e}")
                 logger.error(f"Database upload error: {e}")
+        else:
+            print("[WORKFLOW] Step 5 Skipped: No GitHub sync configured")
         
-        # Test GitHub upload
+        # Step 6: Upload filtered CSV to GitHub
+        print(f"\n[WORKFLOW] Step 6: Upload filtered CSV to GitHub ({len(cars_data)} non-duplicate cars)...")
         if github_config_path:
-            print(f"\n[UPLOAD] Attempting GitHub upload...")
             try:
                 with open(github_config_path, 'r', encoding='utf-8') as f:
                     config = json.load(f)
@@ -2460,14 +2546,14 @@ def run_headless_scraper():
                 github_url = github_uploader.upload_csv_to_github(csv_file, len(cars_data))
                 
                 if github_url:
-                    print(f"[SUCCESS] GitHub upload successful: {github_url}")
+                    print(f"[WORKFLOW] Step 6 Complete: CSV uploaded - {github_url}")
                 else:
-                    print(f"[FAILED] GitHub upload failed")
+                    print(f"[WORKFLOW] Step 6 Failed: CSV upload failed")
                     
             except Exception as e:
-                print(f"[ERROR] GitHub upload exception: {e}")
+                print(f"[WORKFLOW] Step 6 Error: {e}")
         else:
-            print(f"[SKIP] No GitHub config found, skipping upload")
+            print(f"[WORKFLOW] Step 6 Skipped: No GitHub config found")
         
         # Save as JSON for backup
         json_file = os.path.join(args.output_dir, f'olx_results_{args.session_id}_{timestamp}.json')
@@ -2500,7 +2586,25 @@ def run_headless_scraper():
         
         logger.info(f"Results saved successfully to {args.output_dir}")
         
+        # Final workflow summary
+        print("\n" + "="*60)
+        print("[WORKFLOW SUMMARY]")
+        print(f"  Step 1: Scraped {len(all_scraped_cars)} total cars")
+        print(f"  Step 2: Downloaded database from GitHub ({before_size} existing cars)")
+        print(f"  Step 3: Filtered to {len(cars_data)} non-duplicate cars")
+        print(f"  Step 4: Updated database to {after_size} cars (+{after_size - before_size})")
+        print(f"  Step 5: Uploaded database to GitHub")
+        print(f"  Step 6: Uploaded CSV with {len(cars_data)} cars")
+        print("="*60)
         print("[SUCCESS] GitHub Actions scraping completed successfully!")
+        print(f"[RESULT] Database grew from {before_size} to {after_size} cars")
+        print(f"[RESULT] {len(cars_data)} new/changed cars from {len(all_scraped_cars)} total scraped")
+        
+        # CRITICAL: Verify database never shrunk
+        if after_size < before_size:
+            print(f"[CRITICAL ERROR] Database shrunk from {before_size} to {after_size}! Data loss detected!")
+            return False
+            
         return True
         
     except Exception as e:
