@@ -26,19 +26,28 @@ from typing import List, Dict, Optional, Set, Tuple
 from datetime import datetime
 
 # ====== GUI ======
+GUI_AVAILABLE = False
 try:
-    from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl
-    from PyQt5.QtGui import QFont, QDesktopServices
-    from PyQt5.QtWidgets import (
-        QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
-        QFileDialog, QMessageBox, QProgressBar, QComboBox, 
-        QCheckBox, QSpinBox, QGroupBox, QTabWidget,
-        QTableWidget, QTableWidgetItem, QHeaderView,
-        QGridLayout, QScrollArea, QListWidget, QAbstractItemView, QListWidgetItem, QLineEdit
-    )
+    # Only import PyQt5 if not running in GitHub Actions
+    if not ('--config' in sys.argv and '--session-id' in sys.argv):
+        from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl
+        from PyQt5.QtGui import QFont, QDesktopServices
+        from PyQt5.QtWidgets import (
+            QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
+            QFileDialog, QMessageBox, QProgressBar, QComboBox, 
+            QCheckBox, QSpinBox, QGroupBox, QTabWidget,
+            QTableWidget, QTableWidgetItem, QHeaderView,
+            QGridLayout, QScrollArea, QListWidget, QAbstractItemView, QListWidgetItem, QLineEdit
+        )
+        GUI_AVAILABLE = True
+    else:
+        print("[GITHUB] Running in headless mode - PyQt5 not needed")
 except ImportError as e:
-    print(f"PyQt5 import error: {e}\n   Instalează: pip install PyQt5")
-    sys.exit(1)
+    if '--config' not in sys.argv:
+        print(f"PyQt5 import error: {e}\n   Instalează: pip install PyQt5")
+        sys.exit(1)
+    else:
+        print("[GITHUB] PyQt5 not available - running headless mode")
 
 # ====== Selenium ======
 try:
@@ -81,12 +90,17 @@ if '--config' in sys.argv:
         print(f"[GITHUB] Running GitHub Actions session: {session_id}")
         print(f"[GITHUB] Config received: {github_config}")
         
-        # TODO: Convert github_config to SearchConfig and run scraper headless
-        # This will be implemented after we test the workflow
+        # Pentru acum, doar testăm că argumentele ajung corect
+        print(f"[GITHUB] Brands to scrape: {github_config.get('brands', [])}")
+        print(f"[GITHUB] Price range: {github_config.get('price_min', 0)}-{github_config.get('price_max', 999999)}")
+        print(f"[GITHUB] Test completed successfully!")
+        
+        # Exit cu success pentru a testa workflow-ul
+        sys.exit(0)
         
     except Exception as e:
         print(f"[GITHUB] Error parsing GitHub Actions args: {e}")
-        github_mode = False
+        sys.exit(1)
 
 # ---------- Config ----------
 # Handle paths for both development and .exe environments
@@ -1952,6 +1966,10 @@ class OLXAdvancedScraper(QWidget):
 
 # ---------- main ----------
 def main():
+    if not GUI_AVAILABLE:
+        print("GUI not available - run with --config and --session-id for headless mode")
+        return
+        
     app = QApplication(sys.argv)
     app.setApplicationName("OLX Advanced Car Scraper")
     app.setApplicationVersion("3.1")
@@ -1961,13 +1979,15 @@ def main():
         w, "🚗 Bun venit",
         "🆕 Căutare mărci + memorare modele per marcă\n\n"
         "Cum folosești:\n"
-        "1) Scrie în bara de căutare o marcă (ex. „bmw”) ca s-o găsești rapid.\n"
-        "2) Selectează marca (devine „activă”), bifează modelele ei.\n"
+        "1) Scrie în bara de căutare o marcă (ex. „bmw") ca s-o găsești rapid.\n"
+        "2) Selectează marca (devine „activă"), bifează modelele ei.\n"
         "3) Selectează a doua marcă, bifează modelele ei – selecția primei mărci rămâne memorată.\n"
         "4) Setează filtrele (opțional) și apasă Start Scraping."
     )
     sys.exit(app.exec_())
 
 if __name__ == "__main__":
-    main()
+    if not github_mode:
+        main()
+
 
