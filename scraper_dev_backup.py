@@ -433,6 +433,224 @@ class GitHubUploader:
             print(f"[TRACEBACK] {traceback.format_exc()}")
             return None
 
+# ---------- GitHub Database Sync Functions ----------
+class GitHubDatabaseSync:
+    """Handles syncing cars_database.json with GitHub repository"""
+    
+    def __init__(self, username: str, repo: str, token: str):
+        self.username = username
+        self.repo = repo
+        self.token = token
+        self.base_url = f"https://api.github.com/repos/{username}/{repo}"
+        self.logger = logging.getLogger("GitHubDatabaseSync")
+    
+    def download_database(self, local_path: str = None) -> bool:
+        """Download cars_database.json from GitHub repository
+        
+        Args:
+            local_path: Where to save the database file (default: olx_results/cars_database.json)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if local_path is None:
+            local_path = os.path.join(RESULTS_DIR, 'cars_database.json')
+        
+        try:
+            print("\n[DB SYNC] Downloading cars database from GitHub...")
+            self.logger.info("Starting database download from GitHub")
+            
+            # GitHub API endpoint for the database file
+            github_path = "data/cars_database.json"
+            url = f"{self.base_url}/contents/{github_path}"
+            
+            headers = {
+                "Authorization": f"token {self.token}",
+                "Accept": "application/vnd.github.v3+json"
+            }
+            
+            print(f"[DB SYNC] Fetching from: {self.username}/{self.repo}/{github_path}")
+            
+            # Make the API request
+            response = requests.get(url, headers=headers, timeout=30)
+            
+            if response.status_code == 200:
+                # File exists, decode and save
+                data = response.json()
+                content = base64.b64decode(data['content']).decode('utf-8')
+                
+                # Parse to validate JSON
+                db_content = json.loads(content)
+                cars_count = len(db_content.get('cars', {}))
+                
+                # Save to local file
+                os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                with open(local_path, 'w', encoding='utf-8') as f:
+                    json.dump(db_content, f, ensure_ascii=False, indent=2)
+                
+                print(f"[DB SYNC] Database downloaded successfully: {cars_count} cars")
+                self.logger.info(f"Database downloaded: {cars_count} cars")
+                return True
+                
+            elif response.status_code == 404:
+                # File doesn't exist yet, create empty database
+                print("[DB SYNC] Database not found on GitHub, starting with empty database")
+                self.logger.info("Database not found, creating empty database")
+                
+                empty_db = {'cars': {}}
+                os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                with open(local_path, 'w', encoding='utf-8') as f:
+                    json.dump(empty_db, f, ensure_ascii=False, indent=2)
+                
+                return True
+                
+            else:
+                print(f"[DB SYNC] Failed to download database: HTTP {response.status_code}")
+                if response.status_code == 401:
+                    print("[DB SYNC] Authentication failed - check token")
+                elif response.status_code == 403:
+                    print("[DB SYNC] Forbidden - check permissions or rate limits")
+                    
+                self.logger.error(f"Download failed: HTTP {response.status_code}")
+                return False
+                
+        except requests.exceptions.Timeout:
+            print("[DB SYNC] Request timeout - GitHub API took too long")
+            self.logger.error("Database download timeout")
+            return False
+            
+        except requests.exceptions.ConnectionError:
+            print("[DB SYNC] Connection error - cannot reach GitHub")
+            self.logger.error("Database download connection error")
+            return False
+            
+        except json.JSONDecodeError as e:
+            print(f"[DB SYNC] Invalid JSON in database file: {e}")
+            self.logger.error(f"Invalid JSON in database: {e}")
+            return False
+            
+        except Exception as e:
+            print(f"[DB SYNC] Error downloading database: {e}")
+            self.logger.error(f"Database download error: {e}")
+            return False
+    
+    def upload_database(self, local_path: str = None, session_id: str = None) -> bool:
+        """Upload cars_database.json to GitHub repository
+        
+        Args:
+            local_path: Path to the database file (default: olx_results/cars_database.json)
+            session_id: Session ID for commit message
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if local_path is None:
+            local_path = os.path.join(RESULTS_DIR, 'cars_database.json')
+            
+        if not os.path.exists(local_path):
+            print(f"[DB SYNC] Database file not found: {local_path}")
+            self.logger.error(f"Database file not found: {local_path}")
+            return False
+        
+        try:
+            print("\n[DB SYNC] Uploading cars database to GitHub...")
+            self.logger.info("Starting database upload to GitHub")
+            
+            # Read local database file
+            with open(local_path, 'r', encoding='utf-8') as f:
+                db_content = json.load(f)
+            
+            cars_count = len(db_content.get('cars', {}))
+            print(f"[DB SYNC] Uploading database with {cars_count} cars")
+            
+            # Encode content
+            content_str = json.dumps(db_content, ensure_ascii=False, indent=2)
+            content_encoded = base64.b64encode(content_str.encode('utf-8')).decode('utf-8')
+            
+            # GitHub API endpoint
+            github_path = "data/cars_database.json"
+            url = f"{self.base_url}/contents/{github_path}"
+            
+            headers = {
+                "Authorization": f"token {self.token}",
+                "Accept": "application/vnd.github.v3+json"
+            }
+            
+            # First, get the current file SHA if it exists
+            sha = None
+            response = requests.get(url, headers=headers, timeout=30)
+            if response.status_code == 200:
+                sha = response.json()['sha']
+                print(f"[DB SYNC] Existing database found, will update (SHA: {sha[:8]}...)")
+            else:
+                print("[DB SYNC] Creating new database file on GitHub")
+            
+            # Prepare commit message
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            if session_id:
+                commit_msg = f"Update cars database - Session: {session_id} - {timestamp}"
+            else:
+                commit_msg = f"Update cars database - {timestamp}"
+            
+            # Prepare data for upload
+            data = {
+                "message": commit_msg,
+                "content": content_encoded,
+                "branch": "main"
+            }
+            
+            if sha:
+                data["sha"] = sha
+            
+            # Upload the file
+            print(f"[DB SYNC] Uploading to: {self.username}/{self.repo}/{github_path}")
+            response = requests.put(url, json=data, headers=headers, timeout=60)
+            
+            if response.status_code in [200, 201]:
+                print(f"[DB SYNC] Database uploaded successfully ({cars_count} cars)")
+                self.logger.info(f"Database uploaded: {cars_count} cars")
+                
+                # Get the URLs
+                result = response.json()
+                web_url = f"https://github.com/{self.username}/{self.repo}/blob/main/{github_path}"
+                print(f"[DB SYNC] GitHub URL: {web_url}")
+                
+                return True
+                
+            else:
+                print(f"[DB SYNC] Upload failed: HTTP {response.status_code}")
+                
+                if response.status_code == 409:
+                    print("[DB SYNC] Conflict - file may have been modified by another process")
+                elif response.status_code == 422:
+                    print("[DB SYNC] Unprocessable entity - check file format")
+                    
+                try:
+                    error_msg = response.json().get('message', 'Unknown error')
+                    print(f"[DB SYNC] Error message: {error_msg}")
+                except:
+                    pass
+                    
+                self.logger.error(f"Upload failed: HTTP {response.status_code}")
+                return False
+                
+        except requests.exceptions.Timeout:
+            print("[DB SYNC] Request timeout during upload")
+            self.logger.error("Database upload timeout")
+            return False
+            
+        except requests.exceptions.ConnectionError:
+            print("[DB SYNC] Connection error during upload")
+            self.logger.error("Database upload connection error")
+            return False
+            
+        except Exception as e:
+            print(f"[DB SYNC] Error uploading database: {e}")
+            self.logger.error(f"Database upload error: {e}")
+            import traceback
+            print(f"[DB SYNC] Traceback: {traceback.format_exc()}")
+            return False
+
 def test_github_upload():
     """Test GitHub upload functionality with a dummy CSV file"""
     print("\n[TEST] TESTING GITHUB UPLOAD FUNCTIONALITY")
@@ -2100,6 +2318,46 @@ def run_headless_scraper():
         # Set headless mode
         engine.headless = True
         
+        # Sync database from GitHub before scraping
+        github_config_path = None
+        github_db_sync = None
+        
+        # Find GitHub config first
+        config_files = ["github-config.json", "github_config.json", 
+                       os.path.join(args.output_dir, "github-config.json")]
+        
+        for path in config_files:
+            if os.path.exists(path):
+                github_config_path = path
+                break
+        
+        if github_config_path:
+            try:
+                print("\n[DB SYNC] Initializing database sync...")
+                with open(github_config_path, 'r', encoding='utf-8') as f:
+                    github_config = json.load(f)
+                
+                # Initialize database sync
+                github_db_sync = GitHubDatabaseSync(
+                    username=github_config['username'],
+                    repo='olx-csv-data',  # Data repository
+                    token=github_config['token']
+                )
+                
+                # Download the database
+                if github_db_sync.download_database():
+                    print("[DB SYNC] Database sync successful, reloading duplicate database...")
+                    # Reload the database in the engine
+                    engine.load_duplicate_database()
+                else:
+                    print("[DB SYNC] Database download failed, using local database if available")
+                    
+            except Exception as e:
+                print(f"[DB SYNC] Error during database sync: {e}")
+                logger.warning(f"Database sync error: {e}")
+        else:
+            print("[DB SYNC] No GitHub config found, using local database only")
+        
         # Run the scraper using existing engine
         print("Starting car scraping process...")
         cars_data = engine.scrape_all_cars(search_config)
@@ -2173,6 +2431,18 @@ def run_headless_scraper():
         df = pd.DataFrame(export_data)
         csv_file = os.path.join(args.output_dir, f'olx_results_{args.session_id}_{timestamp}.csv')
         df.to_csv(csv_file, index=False, encoding='utf-8')
+        
+        # Upload database to GitHub BEFORE uploading CSV
+        if github_db_sync:
+            try:
+                print("\n[DB SYNC] Uploading updated database to GitHub...")
+                if github_db_sync.upload_database(session_id=args.session_id):
+                    print("[DB SYNC] Database uploaded successfully to GitHub")
+                else:
+                    print("[DB SYNC] Database upload failed - duplicate detection may not work next run")
+            except Exception as e:
+                print(f"[DB SYNC] Error uploading database: {e}")
+                logger.error(f"Database upload error: {e}")
         
         # Test GitHub upload
         if github_config_path:
@@ -2273,5 +2543,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
