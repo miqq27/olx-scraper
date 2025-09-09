@@ -7,7 +7,7 @@ on:
         description: 'JSON configuration for scraping'
         required: true
         type: string
-        default: '{"brands":["BMW"],"models_by_brand":{},"fuel_types":["petrol"],"price_min":5000,"price_max":50000}'
+        default: '{"brands":["BMW"],"models_by_brand":{},"fuel_types":["petrol"],"car_bodies":["sedan","suv","hatchback"],"gearbox_types":["manual","automatic"],"car_states":["used"],"price_min":5000,"price_max":50000,"year_min":2015,"year_max":2024,"km_min":0,"km_max":200000,"power_min":50,"power_max":500,"currency":"EUR","max_pages_per_brand":2}'
       session_id:
         description: 'Session ID for tracking'
         required: true
@@ -27,33 +27,18 @@ jobs:
       with:
         python-version: '3.9'
         
-    - name: Install system dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y wget unzip xvfb
+    - name: Setup Chrome and ChromeDriver
+      uses: browser-actions/setup-chrome@v2
+      with:
+        install-chromedriver: true
+        install-dependencies: true
         
     - name: Start Xvfb
       run: |
         Xvfb :99 -screen 0 1024x768x24 > /dev/null 2>&1 &
         sleep 2
         
-    - name: Install Chrome and ChromeDriver
-      run: |
-        # Install Chrome
-        wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-        echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
-        sudo apt-get update
-        sudo apt-get install -y google-chrome-stable
-        
-        # Install ChromeDriver manually
-        CHROME_VERSION=$(google-chrome --version | cut -d " " -f3 | cut -d "." -f1)
-        CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION}")
-        wget -N "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip"
-        unzip chromedriver_linux64.zip
-        sudo mv chromedriver /usr/local/bin/chromedriver
-        sudo chmod +x /usr/local/bin/chromedriver
-        
-    - name: Install Python dependencies  
+    - name: Install Python dependencies
       run: |
         pip install --upgrade pip
         pip install selenium==4.15.0 beautifulsoup4==4.12.2 requests==2.31.0 pandas==2.1.3 openpyxl==3.1.2 lxml==4.9.3 fake-useragent==1.4.0
@@ -63,7 +48,6 @@ jobs:
         python scraper_dev_backup.py --config '${{ github.event.inputs.config }}' --session-id '${{ github.event.inputs.session_id }}'
       env:
         DISPLAY: :99
-        PATH: /usr/local/bin:$PATH
         
     - name: Upload results
       uses: actions/upload-artifact@v4
