@@ -1,0 +1,65 @@
+name: OLX Scraper
+
+on:
+  workflow_dispatch:
+    inputs:
+      config:
+        description: 'JSON configuration for scraping'
+        required: true
+        type: string
+      session_id:
+        description: 'Session ID for tracking'
+        required: true
+        type: string
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        
+    - name: Install Chrome
+      uses: browser-actions/setup-chrome@latest
+      
+    - name: Install ChromeDriver
+      uses: nanasess/setup-chromedriver@master
+      
+    - name: Install dependencies
+      run: |
+        pip install selenium beautifulsoup4 requests pandas openpyxl lxml
+        
+    - name: Run scraper
+      run: |
+        python scraper_dev_backup.py --config '${{ github.event.inputs.config }}' --session-id '${{ github.event.inputs.session_id }}'
+      env:
+        DISPLAY: :99
+        
+    - name: Upload results
+      uses: actions/upload-artifact@v4
+      with:
+        name: scraping-results-${{ github.event.inputs.session_id }}
+        path: "*.csv"
+        
+    - name: Upload to repository
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        
+        # Upload CSV files to olx-csv-data repository
+        curl -X PUT \
+          -H "Authorization: token $GITHUB_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "message": "Auto-upload scraping results - session ${{ github.event.inputs.session_id }}",
+            "content": "'$(base64 -w 0 *.csv)'"
+          }' \
+          "https://api.github.com/repos/miqq27/olx-csv-data/contents/data/session-${{ github.event.inputs.session_id }}.csv"
