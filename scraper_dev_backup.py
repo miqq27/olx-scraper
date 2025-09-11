@@ -435,7 +435,7 @@ class GitHubUploader:
 
 # ---------- GitHub Database Sync Functions ----------
 class GitHubDatabaseSync:
-    """Handles syncing cars_database.json with GitHub repository"""
+    """Handles syncing price_history.json with GitHub repository"""
     
     def __init__(self, username: str, repo: str, token: str):
         self.username = username
@@ -445,23 +445,23 @@ class GitHubDatabaseSync:
         self.logger = logging.getLogger("GitHubDatabaseSync")
     
     def download_database(self, local_path: str = None) -> bool:
-        """Download cars_database.json from GitHub repository
+        """Download price_history.json from GitHub repository
         
         Args:
-            local_path: Where to save the database file (default: olx_results/cars_database.json)
+            local_path: Where to save the database file (default: olx_results/price_history.json)
             
         Returns:
             True if successful, False otherwise
         """
         if local_path is None:
-            local_path = os.path.join(RESULTS_DIR, 'cars_database.json')
+            local_path = os.path.join(RESULTS_DIR, 'price_history.json')
         
         try:
-            print("\n[DB SYNC] Downloading cars database from GitHub...")
-            self.logger.info("Starting database download from GitHub")
+            print("\n[DB SYNC] Downloading price history database from GitHub...")
+            self.logger.info("Starting price history download from GitHub")
             
             # GitHub API endpoint for the database file
-            github_path = "data/cars_database.json"
+            github_path = "data/price_history.json"
             url = f"{self.base_url}/contents/{github_path}"
             
             headers = {
@@ -481,23 +481,24 @@ class GitHubDatabaseSync:
                 
                 # Parse to validate JSON
                 db_content = json.loads(content)
-                cars_count = len(db_content.get('cars', {}))
+                cars_count = len(db_content.get('history', {}))
+                total_entries = sum(len(hist) for hist in db_content.get('history', {}).values())
                 
                 # Save to local file
                 os.makedirs(os.path.dirname(local_path), exist_ok=True)
                 with open(local_path, 'w', encoding='utf-8') as f:
                     json.dump(db_content, f, ensure_ascii=False, indent=2)
                 
-                print(f"[DB SYNC] Database downloaded successfully: {cars_count} cars")
-                self.logger.info(f"Database downloaded: {cars_count} cars")
+                print(f"[DB SYNC] Price history downloaded successfully: {cars_count} cars, {total_entries} total entries")
+                self.logger.info(f"Price history downloaded: {cars_count} cars, {total_entries} entries")
                 return True
                 
             elif response.status_code == 404:
-                # File doesn't exist yet, create empty database
-                print("[DB SYNC] Database not found on GitHub, starting with empty database")
-                self.logger.info("Database not found, creating empty database")
+                # File doesn't exist yet, create empty price history
+                print("[DB SYNC] Price history not found on GitHub, starting with empty history")
+                self.logger.info("Price history not found, creating empty history")
                 
-                empty_db = {'cars': {}}
+                empty_db = {'history': {}, 'metadata': {}}
                 os.makedirs(os.path.dirname(local_path), exist_ok=True)
                 with open(local_path, 'w', encoding='utf-8') as f:
                     json.dump(empty_db, f, ensure_ascii=False, indent=2)
@@ -534,41 +535,73 @@ class GitHubDatabaseSync:
             self.logger.error(f"Database download error: {e}")
             return False
     
+    def download_database_with_retry(self, local_path: str = None, max_retries: int = 3) -> bool:
+        """Download database with retry logic and safety checks"""
+        for attempt in range(max_retries):
+            try:
+                print(f"[DB SYNC] Download attempt {attempt + 1}/{max_retries}")
+                if self.download_database(local_path):
+                    # Validate downloaded database
+                    if local_path is None:
+                        local_path = os.path.join(RESULTS_DIR, 'price_history.json')
+                    
+                    with open(local_path, 'r', encoding='utf-8') as f:
+                        db_content = json.load(f)
+                    
+                    cars_count = len(db_content.get('history', {}))
+                    if cars_count < 100:  # Safety threshold
+                        print(f"[DB SYNC] WARNING: Downloaded price history suspiciously small ({cars_count} cars)")
+                        if attempt < max_retries - 1:
+                            continue
+                    
+                    print(f"[DB SYNC] Price history validated: {cars_count} cars")
+                    return True
+                    
+            except Exception as e:
+                print(f"[DB SYNC] Attempt {attempt+1} failed: {e}")
+                if attempt < max_retries - 1:
+                    sleep_time = (2 ** attempt) * 5  # Exponential backoff
+                    print(f"[DB SYNC] Retrying in {sleep_time} seconds...")
+                    time.sleep(sleep_time)
+        
+        return False
+    
     def upload_database(self, local_path: str = None, session_id: str = None) -> bool:
-        """Upload cars_database.json to GitHub repository
+        """Upload price_history.json to GitHub repository
         
         Args:
-            local_path: Path to the database file (default: olx_results/cars_database.json)
+            local_path: Path to the database file (default: olx_results/price_history.json)
             session_id: Session ID for commit message
             
         Returns:
             True if successful, False otherwise
         """
         if local_path is None:
-            local_path = os.path.join(RESULTS_DIR, 'cars_database.json')
+            local_path = os.path.join(RESULTS_DIR, 'price_history.json')
             
         if not os.path.exists(local_path):
-            print(f"[DB SYNC] Database file not found: {local_path}")
-            self.logger.error(f"Database file not found: {local_path}")
+            print(f"[DB SYNC] Price history file not found: {local_path}")
+            self.logger.error(f"Price history file not found: {local_path}")
             return False
         
         try:
-            print("\n[DB SYNC] Uploading cars database to GitHub...")
-            self.logger.info("Starting database upload to GitHub")
+            print("\n[DB SYNC] Uploading price history to GitHub...")
+            self.logger.info("Starting price history upload to GitHub")
             
             # Read local database file
             with open(local_path, 'r', encoding='utf-8') as f:
                 db_content = json.load(f)
             
-            cars_count = len(db_content.get('cars', {}))
-            print(f"[DB SYNC] Uploading database with {cars_count} cars")
+            cars_count = len(db_content.get('history', {}))
+            total_entries = sum(len(hist) for hist in db_content.get('history', {}).values())
+            print(f"[DB SYNC] Uploading price history with {cars_count} cars, {total_entries} total entries")
             
             # Encode content
             content_str = json.dumps(db_content, ensure_ascii=False, indent=2)
             content_encoded = base64.b64encode(content_str.encode('utf-8')).decode('utf-8')
             
             # GitHub API endpoint
-            github_path = "data/cars_database.json"
+            github_path = "data/price_history.json"
             url = f"{self.base_url}/contents/{github_path}"
             
             headers = {
@@ -930,138 +963,160 @@ class OLXScrapingEngine:
         self.headless = False  # GitHub Actions headless mode support
         
     def load_duplicate_database(self):
-        db_file = os.path.join(RESULTS_DIR, 'cars_database.json')
+        """Load price history database and convert to duplicate_db format"""
+        db_file = os.path.join(RESULTS_DIR, 'price_history.json')
         try:
             if os.path.exists(db_file):
                 with open(db_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    self.duplicate_db = data.get('cars', {})
-                    self.logger.info(f"Loaded {len(self.duplicate_db)} known cars")
                     
-                    # Enhanced logging for database contents
-                    print(f"\n[DATABASE] Loaded database from: {db_file}")
-                    print(f"[DATABASE] Total entries: {len(self.duplicate_db)}")
-                    
-                    # Sample the first 5 IDs
-                    db_ids = list(self.duplicate_db.keys())
-                    sample_count = min(5, len(db_ids))
-                    if sample_count > 0:
-                        print(f"[DATABASE] Sample of {sample_count} IDs in database:")
-                        for i in range(sample_count):
-                            car_id = db_ids[i]
-                            car_data = self.duplicate_db[car_id]
-                            print(f"  - {car_id}: {car_data.get('title', 'N/A')[:40]}...")
-            else:
-                print(f"[DATABASE] No database file found at: {db_file}")
+                # Convert price_history format to duplicate_db format for compatibility
                 self.duplicate_db = {}
+                history_data = data.get('history', {})
+                
+                for car_id, history in history_data.items():
+                    if history:  # If car has history
+                        latest_entry = history[-1]  # Get most recent entry
+                        self.duplicate_db[car_id] = {
+                            'title': latest_entry.get('title', ''),
+                            'link': latest_entry.get('link', ''),
+                            'last_price': latest_entry.get('price', 0),
+                            'last_seen': latest_entry.get('date', ''),
+                            'first_seen': history[0].get('date', '') if history else latest_entry.get('date', '')
+                        }
+                
+                # CRITICAL SAFETY CHECK
+                cars_count = len(self.duplicate_db)
+                if cars_count < 100 and cars_count > 0:
+                    print(f"[DATABASE] WARNING: Database suspiciously small ({cars_count} cars)")
+                    print(f"[DATABASE] This might indicate corruption - manual review recommended")
+                
+                print(f"[DATABASE] Loaded {cars_count} cars from price history")
+                print(f"[DATABASE] Price history contains {len(history_data)} car records")
+                self.logger.info(f"Loaded {cars_count} known cars from price history")
+                
+                # Enhanced logging for debugging
+                if cars_count > 0:
+                    sample_ids = list(self.duplicate_db.keys())[:5]
+                    print(f"[DATABASE] Sample IDs: {sample_ids}")
+                    
+                    # Sample the first 5 IDs with better error handling
+                    sample_count = min(5, len(sample_ids))
+                    if sample_count > 0:
+                        print(f"[DATABASE] Sample of {sample_count} cars from history:")
+                        for i in range(sample_count):
+                            try:
+                                car_id = sample_ids[i]
+                                car_data = self.duplicate_db[car_id]
+                                history_entries = len(history_data.get(car_id, []))
+                                print(f"  - {car_id}: {car_data.get('title', 'N/A')[:40]}... ({history_entries} entries)")
+                            except Exception as sample_e:
+                                print(f"  - Error displaying sample {i}: {sample_e}")
+                        
+            else:
+                print(f"[DATABASE] No price history file found at: {db_file}")
+                self.duplicate_db = {}
+                
         except Exception as e:
-            self.logger.error(f"DB load fail: {e}")
-            print(f"[DATABASE] ERROR loading database: {e}")
+            print(f"[DATABASE] Error loading price history: {e}")
+            print(f"[DATABASE] Starting with empty database")
+            self.logger.error(f"Price history load fail: {e}")
             self.duplicate_db = {}
     
     def save_duplicate_database(self, new_cars: List[CarData]):
-        db_file = os.path.join(RESULTS_DIR, 'cars_database.json')
-        try:
-            # CRITICAL: Preserve all existing database entries
-            original_size = len(self.duplicate_db)
-            
-            # SAFETY CHECK: Ensure database is properly loaded before merge
-            if original_size == 0 and os.path.exists(db_file):
-                print(f"[DATABASE MERGE] WARNING: Database appears empty but file exists!")
-                print(f"[DATABASE MERGE] Attempting to reload database before merge...")
-                self.load_duplicate_database()
-                original_size = len(self.duplicate_db)
-                print(f"[DATABASE MERGE] After reload: {original_size} cars")
-            
-            new_entries = 0
-            updated_entries = 0
-            
-            print(f"\n[DATABASE MERGE] Starting merge operation")
-            print(f"[DATABASE MERGE] Existing database size: {original_size} cars")
-            print(f"[DATABASE MERGE] Scraped cars to process: {len(new_cars)} cars")
-            
-            # Sample existing database IDs before merge
-            if original_size > 0:
-                existing_sample = list(self.duplicate_db.keys())[:3]
-                print(f"[DATABASE MERGE] Sample existing IDs: {existing_sample}")
-            
-            self.logger.info(f"Merging {len(new_cars)} scraped cars with existing database of {original_size} cars")
-            
-            for car in new_cars:
-                car_id = car.unique_id
-                
-                if car_id in self.duplicate_db:
-                    # Existing car - preserve first_seen, only update last_seen and price
-                    existing_entry = self.duplicate_db[car_id]
-                    self.duplicate_db[car_id] = {
-                        'title': car.title,  # May update title if slightly different
-                        'link': car.link,
-                        'first_seen': existing_entry.get('first_seen', car.scrape_date),  # PRESERVE original
-                        'last_seen': car.scrape_date,  # UPDATE to latest
-                        'last_price': float(car.price_numeric),  # UPDATE price
-                        'last_price_text': car.price_text,  # UPDATE price text
-                    }
-                    updated_entries += 1
-                else:
-                    # New car - add complete entry
-                    self.duplicate_db[car_id] = {
-                        'title': car.title,
-                        'link': car.link,
-                        'first_seen': car.scrape_date,
-                        'last_seen': car.scrape_date,
-                        'last_price': float(car.price_numeric),
-                        'last_price_text': car.price_text,
-                    }
-                    new_entries += 1
-            
-            final_size = len(self.duplicate_db)
-            
-            # Enhanced merge completion logging
-            print(f"\n[DATABASE MERGE] Merge operation complete")
-            print(f"[DATABASE MERGE] Original size: {original_size} cars")
-            print(f"[DATABASE MERGE] Final size: {final_size} cars")
-            print(f"[DATABASE MERGE] New entries added: {new_entries}")
-            print(f"[DATABASE MERGE] Existing entries updated: {updated_entries}")
-            print(f"[DATABASE MERGE] Total size change: +{final_size - original_size}")
-            
-            # SAFETY CHECK: Database should never shrink
-            if final_size < original_size:
-                error_msg = f"CRITICAL ERROR: Database shrunk from {original_size} to {final_size} cars! Data loss detected!"
-                print(f"[DATABASE MERGE] {error_msg}")
-                raise Exception(error_msg)
-            
-            # Verify no data was lost during merge
-            if final_size != original_size + new_entries:
-                warning_msg = f"WARNING: Size mismatch! Expected {original_size + new_entries}, got {final_size}"
-                print(f"[DATABASE MERGE] {warning_msg}")
-                self.logger.warning(warning_msg)
-            
-            # Save the merged database with metadata
-            print(f"[DATABASE MERGE] Saving merged database to: {db_file}")
-            database_content = {
-                'cars': self.duplicate_db,
-                'metadata': {
-                    'last_update': datetime.now().isoformat(),
-                    'total_cars': final_size,
-                    'last_merge_stats': {
-                        'original_size': original_size,
-                        'new_entries': new_entries,
-                        'updated_entries': updated_entries,
-                        'final_size': final_size
-                    }
-                }
+        """Save to price_history.json format preserving all historical data"""
+        db_file = os.path.join(RESULTS_DIR, 'price_history.json')
+        
+        # Load existing history
+        existing_history = {}
+        if os.path.exists(db_file):
+            try:
+                with open(db_file, 'r', encoding='utf-8') as f:
+                    existing_data = json.load(f)
+                    existing_history = existing_data.get('history', {})
+            except Exception as e:
+                print(f"[DATABASE] Error loading existing history: {e}")
+                existing_history = {}
+        
+        original_size = len(existing_history)
+        new_entries = 0
+        updated_entries = 0
+        
+        print(f"\n[DATABASE MERGE] Starting price history merge")
+        print(f"[DATABASE MERGE] Existing history size: {original_size} cars")
+        print(f"[DATABASE MERGE] New cars to process: {len(new_cars)} cars")
+        
+        # Update history with new cars
+        for car in new_cars:
+            car_id = car.unique_id
+            new_entry = {
+                'date': car.scrape_date,
+                'price': float(car.price_numeric),
+                'price_text': car.price_text,
+                'title': car.title,
+                'link': car.link,
+                'source': 'scraper'
             }
             
-            with open(db_file, 'w', encoding='utf-8') as f:
-                json.dump(database_content, f, ensure_ascii=False, indent=2)
-            
-            print(f"[DATABASE MERGE] Database successfully saved")
-            self.logger.info(f"Database merge complete: {original_size} -> {final_size} cars ({new_entries} new, {updated_entries} updated)")
-            
-        except Exception as e:
-            self.logger.error(f"DB save fail: {e}")
-            # CRITICAL: Re-raise to prevent data loss
-            raise
+            if car_id in existing_history:
+                # Append to existing history
+                existing_history[car_id].append(new_entry)
+                updated_entries += 1
+            else:
+                # Create new history
+                existing_history[car_id] = [new_entry]
+                new_entries += 1
+        
+        final_size = len(existing_history)
+        total_entries = sum(len(hist) for hist in existing_history.values())
+        
+        print(f"[DATABASE MERGE] Final size: {final_size} cars")
+        print(f"[DATABASE MERGE] Total entries: {total_entries}")
+        print(f"[DATABASE MERGE] New cars: {new_entries}, Updated cars: {updated_entries}")
+        
+        # Save updated history
+        updated_data = {
+            'history': existing_history,
+            'metadata': {
+                'last_update': datetime.now().isoformat(),
+                'total_cars': final_size,
+                'total_entries': total_entries,
+                'last_merge_stats': {
+                    'original_size': original_size,
+                    'new_entries': new_entries,
+                    'updated_entries': updated_entries,
+                    'final_size': final_size
+                }
+            }
+        }
+        
+        with open(db_file, 'w', encoding='utf-8') as f:
+            json.dump(updated_data, f, ensure_ascii=False, indent=2)
+        
+        print(f"[DATABASE MERGE] Price history saved successfully")
+        self.logger.info(f"Price history merge complete: {original_size} -> {final_size} cars ({new_entries} new, {updated_entries} updated)")
+        
+        # Update duplicate_db for compatibility
+        self.duplicate_db = {}
+        for car_id, history in existing_history.items():
+            if history:
+                latest = history[-1]
+                self.duplicate_db[car_id] = {
+                    'title': latest.get('title', ''),
+                    'link': latest.get('link', ''),
+                    'last_price': latest.get('price', 0),
+                    'last_seen': latest.get('date', ''),
+                    'first_seen': history[0].get('date', '') if history else latest.get('date', '')
+                }
+    
+    def has_significant_price_change(self, car_id: str, new_price: float) -> bool:
+        """Check if price changed significantly from last known price"""
+        if car_id not in self.duplicate_db:
+            return True  # New car
+        
+        last_price = self.duplicate_db[car_id].get('last_price', 0)
+        price_diff = abs(new_price - last_price)
+        return price_diff >= PRICE_CHANGE_THRESHOLD
 
     
     def is_duplicate(self, link: str, title: str = "", current_price: Optional[float] = None) -> bool:
@@ -2560,24 +2615,30 @@ def run_headless_scraper():
                     token=github_config['token']
                 )
                 
-                # Download the database AFTER scraping
-                if github_db_sync.download_database():
-                    print("[DB SYNC] Database downloaded successfully from GitHub")
-                    # Load the database in the engine
+                # Use retry logic for critical database download
+                database_loaded = False
+                
+                if github_db_sync.download_database_with_retry():
                     engine.load_duplicate_database()
-                    print(f"[DB SYNC] Loaded {len(engine.duplicate_db)} existing cars for duplicate detection")
+                    database_loaded = True
+                    print(f"[DB SYNC] Successfully loaded {len(engine.duplicate_db)} cars from GitHub")
                 else:
-                    print("[DB SYNC] Database download failed, using local database if available")
-                    engine.load_duplicate_database()
-                    print(f"[DB SYNC] Using local database with {len(engine.duplicate_db)} cars")
+                    print("[DB SYNC] CRITICAL: All database download attempts failed!")
                     
             except Exception as e:
-                print(f"[DB SYNC] Error during database sync: {e}")
-                logger.warning(f"Database sync error: {e}")
-                engine.load_duplicate_database()
-        else:
-            print("[DB SYNC] No GitHub config found, using local database only")
+                print(f"[DB SYNC] CRITICAL ERROR: {e}")
+
+        # SAFETY CHECK: Abort if database is too small
+        if github_config_path and 'database_loaded' in locals() and database_loaded and len(engine.duplicate_db) < 100:
+            print(f"[SAFETY] ABORTING: Database too small ({len(engine.duplicate_db)} cars)")
+            print(f"[SAFETY] This indicates potential data corruption - manual intervention required")
+            return False
+
+        if not github_config_path or not database_loaded:
+            print("[DB SYNC] WARNING: Using local database fallback")
             engine.load_duplicate_database()
+            if len(engine.duplicate_db) == 0:
+                print("[DB SYNC] No local database available - this is a first run")
         
         print(f"[WORKFLOW] Step 2 Complete: Database ready with {len(engine.duplicate_db)} known cars")
         
