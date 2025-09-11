@@ -905,11 +905,44 @@ class CarDataExtractor:
             if kmt:
                 km = re.search(r'([\d\s.,]+)\s*km', kmt.parent.get_text(), re.I)
                 if km: data['km'] = km.group(1).strip()
-            # Locație
-            for sel in ['a[data-cy="listing-ad-location"]', '.css-1f924qg']:
-                el = soup.select_one(sel)
-                if el:
-                    data['location'] = el.get_text(strip=True); break
+            # Locație - Extract city and county with correct selectors
+            location_parts = []
+            
+            # Extract city name
+            city_el = soup.select_one('p.css-9pna1a')
+            if city_el:
+                city_text = city_el.get_text(strip=True)
+                # Remove trailing comma if present
+                city = city_text.replace(',', '').strip()
+                if city:
+                    location_parts.append(city)
+            
+            # Extract county name  
+            county_el = soup.select_one('p.css-3cz5o2')
+            if county_el:
+                county = county_el.get_text(strip=True)
+                if county:
+                    location_parts.append(county)
+            
+            # Combine city and county
+            if location_parts:
+                data['location'] = ', '.join(location_parts)
+                self.logger.debug(f"Location extracted: {data['location']}")
+            else:
+                # Fallback selectors
+                self.logger.debug("Using fallback selectors for location")
+                for sel in ['[data-testid="map-aside-section"]', '.css-1f924qg', 'a[data-cy="listing-ad-location"]']:
+                    try:
+                        el = soup.select_one(sel)
+                        if el:
+                            location_text = el.get_text(strip=True)
+                            if location_text and 'Localitate' not in location_text:
+                                data['location'] = location_text
+                                self.logger.debug(f"Location from fallback: {location_text}")
+                                break
+                    except Exception as e:
+                        self.logger.debug(f"Fallback selector {sel} failed: {e}")
+                        continue
             # Combustibil
             ft = soup.find(string=re.compile(r'Combustibil', re.I))
             if ft:
@@ -940,7 +973,7 @@ class CarDataExtractor:
             # Defaults
             data.setdefault('year', 'N/A')
             data.setdefault('km', 'N/A')
-            data.setdefault('location', 'N/A')
+            data.setdefault('location', 'Unknown')
             data.setdefault('fuel_type', 'N/A')
             data.setdefault('gearbox', 'N/A')
             data.setdefault('car_body', 'N/A')
@@ -1534,7 +1567,7 @@ class OLXScrapingEngine:
                     price_numeric = cb.get('price_numeric',0),
                     year = det.get('year','N/A'),
                     km = det.get('km','N/A'),
-                    location = det.get('location','N/A'),
+                    location = det.get('location','Unknown'),
                     link = cb.get('link',''),
                     image_urls = det.get('image_urls',[]),
                     fuel_type = det.get('fuel_type','N/A'),
