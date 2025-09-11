@@ -905,43 +905,77 @@ class CarDataExtractor:
             if kmt:
                 km = re.search(r'([\d\s.,]+)\s*km', kmt.parent.get_text(), re.I)
                 if km: data['km'] = km.group(1).strip()
-            # Locație - Extract city and county with correct selectors
+            # Locație - Target map section specifically to avoid seller links
             location_parts = []
+            city_el = None
+            county_el = None
+            
+            # Primary method: Look for location within map container
+            map_container = soup.select_one('[data-testid="map-aside-section"]')
+            if map_container:
+                self.logger.debug("Found map container, extracting location from map section")
+                city_el = map_container.select_one('p.css-9pna1a')
+                county_el = map_container.select_one('p.css-3cz5o2')
+            else:
+                self.logger.debug("No map container found, using document-wide selectors with validation")
+                # Fallback: Use document-wide selectors but validate content
+                city_candidates = soup.select('p.css-9pna1a')
+                county_candidates = soup.select('p.css-3cz5o2')
+                
+                # Find city element that doesn't contain seller keywords
+                for candidate in city_candidates:
+                    text = candidate.get_text(strip=True).lower()
+                    if not any(word in text for word in ['anunțuri', 'vânzător', 'profile', 'user', 'mai multe']):
+                        city_el = candidate
+                        self.logger.debug(f"Selected city candidate: {candidate.get_text(strip=True)}")
+                        break
+                
+                # Find county element that doesn't contain seller keywords  
+                for candidate in county_candidates:
+                    text = candidate.get_text(strip=True).lower()
+                    if not any(word in text for word in ['anunțuri', 'vânzător', 'profile', 'user', 'mai multe']):
+                        county_el = candidate
+                        self.logger.debug(f"Selected county candidate: {candidate.get_text(strip=True)}")
+                        break
             
             # Extract city name
-            city_el = soup.select_one('p.css-9pna1a')
             if city_el:
                 city_text = city_el.get_text(strip=True)
-                # Remove trailing comma if present
                 city = city_text.replace(',', '').strip()
                 if city:
                     location_parts.append(city)
+                    self.logger.debug(f"City extracted: {city}")
             
-            # Extract county name  
-            county_el = soup.select_one('p.css-3cz5o2')
+            # Extract county name with validation
             if county_el:
-                county = county_el.get_text(strip=True)
-                if county:
-                    location_parts.append(county)
+                county_text = county_el.get_text(strip=True)
+                # Skip if contains seller-related keywords
+                if not any(word in county_text.lower() for word in ['anunțuri', 'vânzător', 'profile', 'user', 'mai multe']):
+                    if county_text:
+                        location_parts.append(county_text)
+                        self.logger.debug(f"County extracted: {county_text}")
+                else:
+                    self.logger.debug(f"Skipped county (seller text): {county_text}")
             
             # Combine city and county
             if location_parts:
                 data['location'] = ', '.join(location_parts)
-                self.logger.debug(f"Location extracted: {data['location']}")
+                self.logger.debug(f"Final location extracted: {data['location']}")
             else:
-                # Fallback selectors
-                self.logger.debug("Using fallback selectors for location")
-                for sel in ['[data-testid="map-aside-section"]', '.css-1f924qg', 'a[data-cy="listing-ad-location"]']:
+                # Final fallback selectors
+                self.logger.debug("Using final fallback selectors for location")
+                for sel in ['.css-1f924qg', 'a[data-cy="listing-ad-location"]']:
                     try:
                         el = soup.select_one(sel)
                         if el:
                             location_text = el.get_text(strip=True)
-                            if location_text and 'Localitate' not in location_text:
+                            if (location_text and 'Localitate' not in location_text and 
+                                not any(word in location_text.lower() for word in ['anunțuri', 'vânzător', 'profile', 'user'])):
                                 data['location'] = location_text
-                                self.logger.debug(f"Location from fallback: {location_text}")
+                                self.logger.debug(f"Location from final fallback: {location_text}")
                                 break
                     except Exception as e:
-                        self.logger.debug(f"Fallback selector {sel} failed: {e}")
+                        self.logger.debug(f"Final fallback selector {sel} failed: {e}")
                         continue
             # Combustibil
             ft = soup.find(string=re.compile(r'Combustibil', re.I))
