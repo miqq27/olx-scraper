@@ -1768,7 +1768,6 @@ class CarData:
     price_numeric: float
     year: str
     km: str
-    location: str
     link: str
     image_urls: List[str]
     fuel_type: str
@@ -1841,54 +1840,6 @@ class CarDataExtractor:
             soup = BeautifulSoup(r.content, 'html.parser')
             data = {}
             
-            # Add detailed debugging for location extraction
-            print(f"[DEBUG] Processing URL: {link}")
-            
-            # Log all potential location elements
-            map_containers = soup.select('[data-testid*="map"]')
-            print(f"[DEBUG] Map containers found: {len(map_containers)}")
-            for i, container in enumerate(map_containers):
-                print(f"[DEBUG] Map container {i}: {container.get('data-testid', 'no-testid')}")
-            
-            location_elements = soup.select('p[class*="css-"]')
-            print(f"[DEBUG] All p elements with css classes: {len(location_elements)}")
-            
-            for i, el in enumerate(location_elements[:10]):  # First 10 elements
-                text = el.get_text(strip=True)
-                classes = el.get('class', [])
-                print(f"[DEBUG] Element {i}: classes={classes}, text='{text}'")
-            
-            # Look for elements containing Romanian city names
-            city_pattern = r'(București|Cluj|Timișoara|Constanța|Iași|Brașov|Galați|Craiova|Ploiești|Oradea|Suceava|Bacău|Pitești|Sibiu|Arad|Târgu|Alba)'
-            location_candidates = soup.find_all(text=re.compile(city_pattern, re.I))
-            print(f"[DEBUG] Location text candidates found: {len(location_candidates)}")
-            for i, candidate in enumerate(location_candidates[:3]):
-                if candidate.parent:
-                    parent_tag = candidate.parent.name
-                    parent_classes = candidate.parent.get('class', [])
-                    print(f"[DEBUG] Location candidate {i}: text='{candidate.strip()}', parent={parent_tag}, classes={parent_classes}")
-            
-            # Debug specific selectors we're using
-            css_9pna1a_elements = soup.select('p.css-9pna1a')
-            css_3cz5o2_elements = soup.select('p.css-3cz5o2') 
-            print(f"[DEBUG] p.css-9pna1a elements found: {len(css_9pna1a_elements)}")
-            print(f"[DEBUG] p.css-3cz5o2 elements found: {len(css_3cz5o2_elements)}")
-            
-            for i, el in enumerate(css_9pna1a_elements):
-                print(f"[DEBUG] css-9pna1a {i}: '{el.get_text(strip=True)}'")
-            for i, el in enumerate(css_3cz5o2_elements):
-                print(f"[DEBUG] css-3cz5o2 {i}: '{el.get_text(strip=True)}'")
-            
-            # Check for map section specifically
-            map_section = soup.select_one('[data-testid="map-aside-section"]')
-            print(f"[DEBUG] Map aside section found: {map_section is not None}")
-            if map_section:
-                map_p_elements = map_section.select('p')
-                print(f"[DEBUG] P elements in map section: {len(map_p_elements)}")
-                for i, el in enumerate(map_p_elements):
-                    classes = el.get('class', [])
-                    text = el.get_text(strip=True)
-                    print(f"[DEBUG] Map p element {i}: classes={classes}, text='{text}'")
             # An
             yt = soup.find(string=re.compile(r'An de fabricatie', re.I))
             if yt:
@@ -1899,148 +1850,6 @@ class CarDataExtractor:
             if kmt:
                 km = re.search(r'([\d\s.,]+)\s*km', kmt.parent.get_text(), re.I)
                 if km: data['km'] = km.group(1).strip()
-            # Locație - Target map section specifically to avoid seller links
-            location_parts = []
-            city_el = None
-            county_el = None
-            
-            # Primary method: Look for location within map container
-            map_container = soup.select_one('[data-testid="map-aside-section"]')
-            if map_container:
-                self.logger.debug("Found map container, extracting location from map section")
-                city_el = map_container.select_one('p.css-9pna1a')
-                county_el = map_container.select_one('p.css-3cz5o2')
-            else:
-                self.logger.debug("No map container found, using document-wide selectors with validation")
-                # Fallback: Use document-wide selectors but validate content
-                city_candidates = soup.select('p.css-9pna1a')
-                county_candidates = soup.select('p.css-3cz5o2')
-                
-                # Find city element that doesn't contain seller keywords
-                for candidate in city_candidates:
-                    text = candidate.get_text(strip=True).lower()
-                    if not any(word in text for word in ['anunțuri', 'vânzător', 'profile', 'user', 'mai multe']):
-                        city_el = candidate
-                        self.logger.debug(f"Selected city candidate: {candidate.get_text(strip=True)}")
-                        break
-                
-                # Find county element that doesn't contain seller keywords  
-                for candidate in county_candidates:
-                    text = candidate.get_text(strip=True).lower()
-                    if not any(word in text for word in ['anunțuri', 'vânzător', 'profile', 'user', 'mai multe']):
-                        county_el = candidate
-                        self.logger.debug(f"Selected county candidate: {candidate.get_text(strip=True)}")
-                        break
-            
-            # Extract city name
-            if city_el:
-                city_text = city_el.get_text(strip=True)
-                city = city_text.replace(',', '').strip()
-                if city:
-                    location_parts.append(city)
-                    self.logger.debug(f"City extracted: {city}")
-            
-            # Extract county name with validation
-            if county_el:
-                county_text = county_el.get_text(strip=True)
-                # Skip if contains seller-related keywords
-                if not any(word in county_text.lower() for word in ['anunțuri', 'vânzător', 'profile', 'user', 'mai multe']):
-                    if county_text:
-                        location_parts.append(county_text)
-                        self.logger.debug(f"County extracted: {county_text}")
-                else:
-                    self.logger.debug(f"Skipped county (seller text): {county_text}")
-            
-            # Combine city and county
-            if location_parts:
-                data['location'] = ', '.join(location_parts)
-                self.logger.debug(f"Final location extracted: {data['location']}")
-            else:
-                # Final fallback selectors
-                self.logger.debug("Using final fallback selectors for location")
-                for sel in ['.css-1f924qg', 'a[data-cy="listing-ad-location"]']:
-                    try:
-                        el = soup.select_one(sel)
-                        if el:
-                            location_text = el.get_text(strip=True)
-                            if (location_text and 'Localitate' not in location_text and 
-                                not any(word in location_text.lower() for word in ['anunțuri', 'vânzător', 'profile', 'user'])):
-                                data['location'] = location_text
-                                self.logger.debug(f"Location from final fallback: {location_text}")
-                                break
-                    except Exception as e:
-                        self.logger.debug(f"Final fallback selector {sel} failed: {e}")
-                        continue
-            
-            # Enhanced location extraction if still no location found
-            if 'location' not in data or data.get('location') == 'Unknown':
-                print("[DEBUG] No location found with primary methods, trying enhanced extraction")
-                
-                # Method 1: Search by text content patterns
-                city_pattern = r'(București|Cluj|Timișoara|Constanța|Iași|Brașov|Galați|Craiova|Ploiești|Oradea|Suceava|Bacău|Pitești|Sibiu|Arad|Târgu|Alba|Deva|Botoșani|Piatra|Neamț|Satu|Mare|Baia|Buzău|Focșani|Tulcea|Drobeta|Turnu|Severin|Reșița|Hunedoara|Miercurea|Ciuc|Sfântu|Gheorghe|Brăila|Călărași|Giurgiu|Teleorman|Olt|Vâlcea|Gorj|Mehedinți|Caraș|Maramureș|Sălaj|Bihor|Cluj|Mureș|Harghita|Covasna|Vrancea|Vaslui|Botoșani|Iași|Neamț|Bacău|Suceava)'
-                
-                location_texts = soup.find_all(text=re.compile(city_pattern, re.I))
-                for text in location_texts[:5]:  # Check first 5 matches
-                    if text.parent and text.parent.name:
-                        parent_text = text.parent.get_text(strip=True)
-                        # Skip if parent contains seller keywords
-                        if not any(word in parent_text.lower() for word in ['anunțuri', 'vânzător', 'profile', 'user', 'mai multe']):
-                            # Extract city from the text
-                            match = re.search(city_pattern, parent_text, re.I)
-                            if match:
-                                city_name = match.group(1)
-                                data['location'] = city_name
-                                print(f"[DEBUG] Location found by text pattern: {city_name}")
-                                break
-                
-                # Method 2: Broader CSS class patterns
-                if 'location' not in data or data.get('location') == 'Unknown':
-                    broad_selectors = [
-                        'p[class*="location"]',
-                        'div[class*="location"]',
-                        'span[class*="location"]',
-                        '[data-cy*="location"]',
-                        '[class*="address"]',
-                        '[class*="map"]',
-                        'p[class^="css-"]',  # Any p with css- class
-                    ]
-                    
-                    for selector in broad_selectors:
-                        elements = soup.select(selector)
-                        for el in elements:
-                            text = el.get_text(strip=True)
-                            # Check if text looks like a location
-                            if (text and len(text) < 100 and 
-                                re.search(city_pattern, text, re.I) and
-                                not any(word in text.lower() for word in ['anunțuri', 'vânzător', 'profile', 'user', 'mai multe', 'pret', 'euro', 'lei'])):
-                                data['location'] = text
-                                print(f"[DEBUG] Location found by broad selector {selector}: {text}")
-                                break
-                        if 'location' in data and data['location'] != 'Unknown':
-                            break
-                
-                # Method 3: Look for any element near "Localitate" text
-                if 'location' not in data or data.get('location') == 'Unknown':
-                    localitate_elements = soup.find_all(text=re.compile(r'Locali[tț]ate|Loca[tț]ie|Ora[șş]', re.I))
-                    for loc_text in localitate_elements:
-                        if loc_text.parent:
-                            # Look for siblings or nearby elements
-                            parent = loc_text.parent
-                            next_elements = parent.find_next_siblings()[:3]  # Check next 3 siblings
-                            
-                            for sibling in next_elements:
-                                sib_text = sibling.get_text(strip=True)
-                                if (sib_text and len(sib_text) < 50 and 
-                                    not any(word in sib_text.lower() for word in ['anunțuri', 'vânzător', 'profile', 'user'])):
-                                    data['location'] = sib_text
-                                    print(f"[DEBUG] Location found near 'Localitate': {sib_text}")
-                                    break
-                            if 'location' in data and data['location'] != 'Unknown':
-                                break
-            
-            # Final debug output for location
-            final_location = data.get('location', 'Unknown')
-            print(f"[DEBUG] FINAL LOCATION RESULT: '{final_location}'")
             
             # Combustibil
             ft = soup.find(string=re.compile(r'Combustibil', re.I))
@@ -2072,7 +1881,6 @@ class CarDataExtractor:
             # Defaults
             data.setdefault('year', 'N/A')
             data.setdefault('km', 'N/A')
-            data.setdefault('location', 'Unknown')
             data.setdefault('fuel_type', 'N/A')
             data.setdefault('gearbox', 'N/A')
             data.setdefault('car_body', 'N/A')
@@ -2715,7 +2523,6 @@ class OLXScrapingEngine:
                     price_numeric = cb.get('price_numeric',0),
                     year = det.get('year','N/A'),
                     km = det.get('km','N/A'),
-                    location = det.get('location','Unknown'),
                     link = cb.get('link',''),
                     image_urls = det.get('image_urls',[]),
                     fuel_type = det.get('fuel_type','N/A'),
@@ -3296,8 +3103,8 @@ class OLXAdvancedScraper(QWidget):
             self.results_info.setStyleSheet("font-size: 14px; margin: 10px;")
             layout.addWidget(self.results_info)
             self.results_table = QTableWidget()
-            self.results_table.setColumnCount(11)
-            self.results_table.setHorizontalHeaderLabels(["Titlu","Preț","An","KM","Locație","Combustibil","Transmisie","Caroserie","Marcă","Model","Acțiuni"])
+            self.results_table.setColumnCount(10)
+            self.results_table.setHorizontalHeaderLabels(["Titlu","Preț","An","KM","Combustibil","Transmisie","Caroserie","Marcă","Model","Acțiuni"])
             header = self.results_table.horizontalHeader()
             header.setSectionResizeMode(0, QHeaderView.Stretch)
             header.setSectionResizeMode(4, QHeaderView.Stretch)
@@ -3403,7 +3210,7 @@ class OLXAdvancedScraper(QWidget):
             for c in cars:
                 rows.append({
                     'titlu': c.title, 'pret_text': c.price_text, 'pret_numeric': c.price_numeric,
-                    'an': c.year, 'kilometraj': c.km, 'locatie': c.location,
+                    'an': c.year, 'kilometraj': c.km,
                     'link': c.link, 'imagini_urls': ';'.join(c.image_urls) if c.image_urls else '',
                     'combustibil': c.fuel_type, 'transmisie': c.gearbox, 'caroserie': c.car_body,
                     'marca': c.brand, 'model': c.model,
@@ -3500,15 +3307,14 @@ class OLXAdvancedScraper(QWidget):
                 self.results_table.setItem(row, 1, QTableWidgetItem(car.price_text))
                 self.results_table.setItem(row, 2, QTableWidgetItem(car.year))
                 self.results_table.setItem(row, 3, QTableWidgetItem(car.km))
-                self.results_table.setItem(row, 4, QTableWidgetItem(car.location))
-                self.results_table.setItem(row, 5, QTableWidgetItem(car.fuel_type))
-                self.results_table.setItem(row, 6, QTableWidgetItem(car.gearbox))
-                self.results_table.setItem(row, 7, QTableWidgetItem(car.car_body))
-                self.results_table.setItem(row, 8, QTableWidgetItem(car.brand))
-                self.results_table.setItem(row, 9, QTableWidgetItem(car.model))
+                self.results_table.setItem(row, 4, QTableWidgetItem(car.fuel_type))
+                self.results_table.setItem(row, 5, QTableWidgetItem(car.gearbox))
+                self.results_table.setItem(row, 6, QTableWidgetItem(car.car_body))
+                self.results_table.setItem(row, 7, QTableWidgetItem(car.brand))
+                self.results_table.setItem(row, 8, QTableWidgetItem(car.model))
                 btn = QPushButton("Deschide"); btn.setToolTip("Deschide anunțul în browser")
                 btn.clicked.connect(lambda checked, url=car.link: self.open_car_link(url))
-                self.results_table.setCellWidget(row, 10, btn)
+                self.results_table.setCellWidget(row, 9, btn)
             self.results_table.resizeColumnsToContents()
         
     def open_car_link(self, url):
@@ -3544,7 +3350,7 @@ class OLXAdvancedScraper(QWidget):
                 for c in self.cars_data:
                     rows.append({
                         'titlu': c.title, 'pret_text': c.price_text, 'pret_numeric': c.price_numeric,
-                        'an': c.year, 'kilometraj': c.km, 'locatie': c.location,
+                        'an': c.year, 'kilometraj': c.km,
                         'link': c.link, 'imagini_urls': ';'.join(c.image_urls) if c.image_urls else '',
                         'combustibil': c.fuel_type, 'transmisie': c.gearbox, 'caroserie': c.car_body,
                         'marca': c.brand, 'model': c.model,
@@ -3858,7 +3664,6 @@ def run_headless_scraper():
                 'pret_numeric': car.price_numeric,
                 'an': car.year,
                 'kilometraj': car.km,
-                'locatie': car.location,
                 'link': car.link,
                 'imagini_urls': ';'.join(car.image_urls) if car.image_urls else '',
                 'combustibil': car.fuel_type,
