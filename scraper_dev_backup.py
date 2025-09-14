@@ -470,7 +470,7 @@ class GitHubDatabaseSync:
             try:
                 print(f"[DB SYNC] Downloading database (attempt {attempt + 1}/3)")
                 
-                url = f"{self.base_url}/contents/price_history.json"
+                url = f"{self.base_url}/contents/data/price_history.json"
                 headers = {'Authorization': f'token {self.token}'}
                 
                 response = requests.get(url, headers=headers, timeout=30)
@@ -541,7 +541,7 @@ class GitHubDatabaseSync:
                 file_content = json.dumps(database, ensure_ascii=False, indent=2)
                 encoded_content = base64.b64encode(file_content.encode('utf-8')).decode('utf-8')
                 
-                url = f"{self.base_url}/contents/price_history.json"
+                url = f"{self.base_url}/contents/data/price_history.json"
                 headers = {'Authorization': f'token {self.token}'}
                 
                 # Check if file exists to get SHA
@@ -877,16 +877,6 @@ class OLXScrapingEngine:
                 }
             }
         }
-
-        # Validate data before saving
-        validator = DatabaseValidator()
-        is_valid, error_msg, corrected_data = validator.validate_database(updated_data)
-
-        if corrected_data:
-            updated_data = corrected_data
-            print(f"[DATABASE] Data corrected before save: {error_msg}")
-        elif not is_valid:
-            print(f"[DATABASE] WARNING: Saving potentially invalid data: {error_msg}")
 
         # Use atomic write operation
         temp_file = db_file + '.tmp'
@@ -2443,12 +2433,12 @@ def run_headless_scraper():
                 print(f"[DB SYNC] CRITICAL ERROR: {e}")
 
         # SAFETY CHECK: Abort if database is too small
-        if github_config_path and 'database_loaded' in locals() and database_loaded and len(engine.duplicate_db) < 100:
+        if github_config_path and len(engine.duplicate_db) < 100:
             print(f"[SAFETY] ABORTING: Database too small ({len(engine.duplicate_db)} cars)")
             print(f"[SAFETY] This indicates potential data corruption - manual intervention required")
             return False
 
-        if not github_config_path or not database_loaded:
+        if not github_config_path:
             print("[DB SYNC] WARNING: Using local database fallback")
             engine.load_duplicate_database()
             if len(engine.duplicate_db) == 0:
