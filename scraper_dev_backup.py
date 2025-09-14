@@ -459,1289 +459,127 @@ class GitHubDatabaseSync:
         self.base_url = f"https://api.github.com/repos/{username}/{repo}"
         self.logger = logging.getLogger("GitHubDatabaseSync")
 
-        # Initialize protection components
-        try:
-            self.safe_operations = SafeDatabaseOperations(self)
-            self.file_lock_manager = FileLockManager()
-            print("[PROTECTION] Database protection system initialized successfully")
-        except Exception as e:
-            print(f"[PROTECTION] WARNING: Failed to initialize protection system: {e}")
-            print("[PROTECTION] Falling back to basic operations")
-            self.safe_operations = None
-            self.file_lock_manager = None
+        # Simple database operations
     
     def download_database(self, local_path: str = None) -> bool:
-        """Download price_history.json from GitHub repository
-        
-        Args:
-            local_path: Where to save the database file (default: olx_results/price_history.json)
-            
-        Returns:
-            True if successful, False otherwise
-        """
+        """Simple download with basic retry logic"""
         if local_path is None:
             local_path = os.path.join(RESULTS_DIR, 'price_history.json')
         
-        try:
-            print("\n[DB SYNC] Downloading price history database from GitHub...")
-            self.logger.info("Starting price history download from GitHub")
-            
-            # GitHub API endpoint for the database file
-            github_path = "data/price_history.json"
-            url = f"{self.base_url}/contents/{github_path}"
-            
-            headers = {
-                "Authorization": f"token {self.token}",
-                "Accept": "application/vnd.github.v3+json"
-            }
-            
-            print(f"[DB SYNC] Fetching from: {self.username}/{self.repo}/{github_path}")
-            
-            # Make the API request
-            response = requests.get(url, headers=headers, timeout=30)
-            
-            if response.status_code == 200:
-                # File exists, decode and save
-                data = response.json()
-                content = base64.b64decode(data['content']).decode('utf-8')
-                
-                # Parse to validate JSON
-                db_content = json.loads(content)
-                cars_count = len(db_content.get('history', {}))
-                total_entries = sum(len(hist) for hist in db_content.get('history', {}).values())
-                
-                # Save to local file
-                os.makedirs(os.path.dirname(local_path), exist_ok=True)
-                with open(local_path, 'w', encoding='utf-8') as f:
-                    json.dump(db_content, f, ensure_ascii=False, indent=2)
-                
-                print(f"[DB SYNC] Price history downloaded successfully: {cars_count} cars, {total_entries} total entries")
-                self.logger.info(f"Price history downloaded: {cars_count} cars, {total_entries} entries")
-                return True
-                
-            elif response.status_code == 404:
-                # File doesn't exist yet, create empty price history
-                print("[DB SYNC] Price history not found on GitHub, starting with empty history")
-                self.logger.info("Price history not found, creating empty history")
-                
-                empty_db = {'history': {}, 'metadata': {}}
-                os.makedirs(os.path.dirname(local_path), exist_ok=True)
-                with open(local_path, 'w', encoding='utf-8') as f:
-                    json.dump(empty_db, f, ensure_ascii=False, indent=2)
-                
-                return True
-                
-            else:
-                print(f"[DB SYNC] Failed to download database: HTTP {response.status_code}")
-                if response.status_code == 401:
-                    print("[DB SYNC] Authentication failed - check token")
-                elif response.status_code == 403:
-                    print("[DB SYNC] Forbidden - check permissions or rate limits")
-                    
-                self.logger.error(f"Download failed: HTTP {response.status_code}")
-                return False
-                
-        except requests.exceptions.Timeout:
-            print("[DB SYNC] Request timeout - GitHub API took too long")
-            self.logger.error("Database download timeout")
-            return False
-            
-        except requests.exceptions.ConnectionError:
-            print("[DB SYNC] Connection error - cannot reach GitHub")
-            self.logger.error("Database download connection error")
-            return False
-            
-        except json.JSONDecodeError as e:
-            print(f"[DB SYNC] Invalid JSON in database file: {e}")
-            self.logger.error(f"Invalid JSON in database: {e}")
-            return False
-            
-        except Exception as e:
-            print(f"[DB SYNC] Error downloading database: {e}")
-            self.logger.error(f"Database download error: {e}")
-            return False
-    
-    def download_database_with_retry(self, local_path: str = None, max_retries: int = 3) -> bool:
-        """Download database with retry logic and safety checks"""
-        for attempt in range(max_retries):
+        for attempt in range(3):  # Simple 3 retries
             try:
-                print(f"[DB SYNC] Download attempt {attempt + 1}/{max_retries}")
-                if self.download_database(local_path):
-                    # Validate downloaded database
-                    if local_path is None:
-                        local_path = os.path.join(RESULTS_DIR, 'price_history.json')
-                    
-                    with open(local_path, 'r', encoding='utf-8') as f:
-                        db_content = json.load(f)
-                    
-                    cars_count = len(db_content.get('history', {}))
-                    if cars_count < 100:  # Safety threshold
-                        print(f"[DB SYNC] WARNING: Downloaded price history suspiciously small ({cars_count} cars)")
-                        if attempt < max_retries - 1:
-                            continue
-                    
-                    print(f"[DB SYNC] Price history validated: {cars_count} cars")
+                print(f"[DB SYNC] Downloading database (attempt {attempt + 1}/3)")
+                
+                url = f"{self.base_url}/contents/price_history.json"
+                headers = {'Authorization': f'token {self.token}'}
+                
+                response = requests.get(url, headers=headers, timeout=30)
+                
+                if response.status_code == 404:
+                    # File doesn't exist yet - create empty database
+                    print("[DB SYNC] No database found on GitHub, creating empty database")
+                    empty_db = {'history': {}, 'metadata': {'created_at': datetime.now().isoformat()}}
+                    with open(local_path, 'w', encoding='utf-8') as f:
+                        json.dump(empty_db, f, ensure_ascii=False, indent=2)
                     return True
-                    
+                
+                if response.status_code == 200:
+                    file_content = response.json().get('content', '')
+                    if file_content:
+                        import base64
+                        decoded_content = base64.b64decode(file_content).decode('utf-8')
+                        database = json.loads(decoded_content)
+                        
+                        # Basic sanity check - must be a dict with history key
+                        if isinstance(database, dict) and 'history' in database:
+                            with open(local_path, 'w', encoding='utf-8') as f:
+                                json.dump(database, f, ensure_ascii=False, indent=2)
+                            print(f"[DB SYNC] Downloaded database with {len(database.get('history', {}))} entries")
+                            return True
+                        else:
+                            print("[DB SYNC] Downloaded data is malformed, retrying...")
+                            continue
+                            
+                print(f"[DB SYNC] Attempt {attempt + 1} failed (status: {response.status_code})")
+                
             except Exception as e:
-                print(f"[DB SYNC] Attempt {attempt+1} failed: {e}")
-                if attempt < max_retries - 1:
-                    sleep_time = (2 ** attempt) * 5  # Exponential backoff
-                    print(f"[DB SYNC] Retrying in {sleep_time} seconds...")
-                    time.sleep(sleep_time)
+                print(f"[DB SYNC] Attempt {attempt + 1} error: {e}")
+                
+            if attempt < 2:  # Don't sleep after last attempt
+                time.sleep(2)  # Simple 2 second delay
         
-        return False
-    
+        # All retries failed - create empty database as fallback
+        print("[DB SYNC] All downloads failed, creating empty database")
+        empty_db = {'history': {}, 'metadata': {'created_at': datetime.now().isoformat()}}
+        with open(local_path, 'w', encoding='utf-8') as f:
+            json.dump(empty_db, f, ensure_ascii=False, indent=2)
+        return True  # Always succeed - empty database is better than crash
+
     def upload_database(self, local_path: str = None, session_id: str = None) -> bool:
-        """Upload price_history.json to GitHub repository
-        
-        Args:
-            local_path: Path to the database file (default: olx_results/price_history.json)
-            session_id: Session ID for commit message
-            
-        Returns:
-            True if successful, False otherwise
-        """
+        """Simple upload with basic retry logic"""
         if local_path is None:
             local_path = os.path.join(RESULTS_DIR, 'price_history.json')
             
         if not os.path.exists(local_path):
-            print(f"[DB SYNC] Price history file not found: {local_path}")
-            self.logger.error(f"Price history file not found: {local_path}")
+            print("[DB SYNC] No local database file to upload")
             return False
         
-        try:
-            print("\n[DB SYNC] Uploading price history to GitHub...")
-            self.logger.info("Starting price history upload to GitHub")
-            
-            # Read local database file
-            with open(local_path, 'r', encoding='utf-8') as f:
-                db_content = json.load(f)
-            
-            cars_count = len(db_content.get('history', {}))
-            total_entries = sum(len(hist) for hist in db_content.get('history', {}).values())
-            print(f"[DB SYNC] Uploading price history with {cars_count} cars, {total_entries} total entries")
-            
-            # Encode content
-            content_str = json.dumps(db_content, ensure_ascii=False, indent=2)
-            content_encoded = base64.b64encode(content_str.encode('utf-8')).decode('utf-8')
-            
-            # GitHub API endpoint
-            github_path = "data/price_history.json"
-            url = f"{self.base_url}/contents/{github_path}"
-            
-            headers = {
-                "Authorization": f"token {self.token}",
-                "Accept": "application/vnd.github.v3+json"
-            }
-            
-            # First, get the current file SHA if it exists
-            sha = None
-            response = requests.get(url, headers=headers, timeout=30)
-            if response.status_code == 200:
-                sha = response.json()['sha']
-                print(f"[DB SYNC] Existing database found, will update (SHA: {sha[:8]}...)")
-            else:
-                print("[DB SYNC] Creating new database file on GitHub")
-            
-            # Prepare commit message
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            if session_id:
-                commit_msg = f"Update cars database - Session: {session_id} - {timestamp}"
-            else:
-                commit_msg = f"Update cars database - {timestamp}"
-            
-            # Prepare data for upload
-            data = {
-                "message": commit_msg,
-                "content": content_encoded,
-                "branch": "main"
-            }
-            
-            if sha:
-                data["sha"] = sha
-            
-            # Upload the file
-            print(f"[DB SYNC] Uploading to: {self.username}/{self.repo}/{github_path}")
-            response = requests.put(url, json=data, headers=headers, timeout=60)
-            
-            if response.status_code in [200, 201]:
-                print(f"[DB SYNC] Database uploaded successfully ({cars_count} cars)")
-                self.logger.info(f"Database uploaded: {cars_count} cars")
-                
-                # Get the URLs
-                result = response.json()
-                web_url = f"https://github.com/{self.username}/{self.repo}/blob/main/{github_path}"
-                print(f"[DB SYNC] GitHub URL: {web_url}")
-                
-                return True
-                
-            else:
-                print(f"[DB SYNC] Upload failed: HTTP {response.status_code}")
-                
-                if response.status_code == 409:
-                    print("[DB SYNC] Conflict - file may have been modified by another process")
-                elif response.status_code == 422:
-                    print("[DB SYNC] Unprocessable entity - check file format")
-                    
-                try:
-                    error_msg = response.json().get('message', 'Unknown error')
-                    print(f"[DB SYNC] Error message: {error_msg}")
-                except:
-                    pass
-                    
-                self.logger.error(f"Upload failed: HTTP {response.status_code}")
-                return False
-                
-        except requests.exceptions.Timeout:
-            print("[DB SYNC] Request timeout during upload")
-            self.logger.error("Database upload timeout")
-            return False
-            
-        except requests.exceptions.ConnectionError:
-            print("[DB SYNC] Connection error during upload")
-            self.logger.error("Database upload connection error")
-            return False
-            
-        except Exception as e:
-            print(f"[DB SYNC] Error uploading database: {e}")
-            self.logger.error(f"Database upload error: {e}")
-            import traceback
-            print(f"[DB SYNC] Traceback: {traceback.format_exc()}")
-            return False
-
-    # ---------- Protected Database Operations ----------
-
-    def safe_download_database(self, local_path: str = None, session_id: str = None) -> Tuple[bool, Optional[dict], str]:
-        """Safely download database with comprehensive protection and fallback mechanisms.
-
-        This method replaces the basic download_database with bulletproof protection including:
-        - Multiple retry attempts with exponential backoff
-        - Content validation and automatic correction
-        - Fallback to local backups if GitHub fails
-        - Race condition prevention with file locking
-        - Atomic operations to prevent corruption
-
-        Args:
-            local_path: Where to save the database file (default: olx_results/price_history.json)
-            session_id: Optional session ID for unique operations and locking
-
-        Returns:
-            Tuple of (success, database_content, source_description)
-        """
-        if local_path is None:
-            local_path = os.path.join(RESULTS_DIR, 'price_history.json')
-
-        # Acquire database lock to prevent race conditions (if available)
-        lock_handle = None
-        if self.file_lock_manager:
-            lock_handle = self.file_lock_manager.acquire_database_lock(session_id)
-
-        try:
-            print(f"\n[PROTECTED DB] Starting safe database download with session: {session_id or 'default'}")
-            self.logger.info(f"Starting protected database download (session: {session_id})")
-
-            # Clean up any stale locks first (if available)
-            if self.file_lock_manager:
-                self.file_lock_manager.cleanup_stale_locks()
-
-            # Use safe operations for download (with fallback)
-            if self.safe_operations:
-                success, content, source_desc = self.safe_operations.safe_download(local_path, session_id)
-            else:
-                print("[PROTECTION] Using fallback download method")
-                success = self.download_database_with_retry(local_path)
-                if success and os.path.exists(local_path):
-                    with open(local_path, 'r', encoding='utf-8') as f:
-                        content = json.load(f)
-                    source_desc = "Fallback download"
-                else:
-                    content = None
-                    source_desc = "Fallback download failed"
-
-            if success and content:
-                cars_count = len(content.get('history', {}))
-                total_entries = sum(len(hist) for hist in content.get('history', {}).values())
-                print(f"[PROTECTED DB] Database loaded successfully: {cars_count} cars, {total_entries} entries")
-                print(f"[PROTECTED DB] Recovery chain: {source_desc}")
-                self.logger.info(f"Protected download successful: {source_desc}")
-                return success, content, source_desc
-            else:
-                print(f"[PROTECTED DB] Database download failed: {source_desc}")
-                self.logger.error(f"Protected download failed: {source_desc}")
-                return False, None, source_desc
-
-        finally:
-            # Always release the lock
-            if lock_handle:
-                self.file_lock_manager.release_database_lock(lock_handle)
-
-    def safe_upload_database(self, content: dict = None, local_path: str = None, session_id: str = None) -> bool:
-        """Safely upload database with comprehensive protection and retry mechanisms.
-
-        This method replaces the basic upload_database with bulletproof protection including:
-        - Pre-upload content validation and correction
-        - Automatic backup creation before upload attempt
-        - Multiple retry attempts with exponential backoff
-        - Atomic operations to prevent corruption
-        - Race condition prevention with file locking
-
-        Args:
-            content: Database content to upload (if None, loads from local_path)
-            local_path: Local file path (default: olx_results/price_history.json)
-            session_id: Optional session ID for unique operations and locking
-
-        Returns:
-            True if successful, False otherwise
-        """
-        if local_path is None:
-            local_path = os.path.join(RESULTS_DIR, 'price_history.json')
-
-        # Acquire database lock to prevent race conditions (if available)
-        lock_handle = None
-        if self.file_lock_manager:
-            lock_handle = self.file_lock_manager.acquire_database_lock(session_id)
-
-        try:
-            print(f"\n[PROTECTED DB] Starting safe database upload with session: {session_id or 'default'}")
-            self.logger.info(f"Starting protected database upload (session: {session_id})")
-
-            # Load content if not provided
-            if content is None:
-                try:
-                    if not os.path.exists(local_path):
-                        self.logger.error(f"Local database file not found: {local_path}")
-                        return False
-
-                    with open(local_path, 'r', encoding='utf-8') as f:
-                        content = json.load(f)
-                except Exception as e:
-                    self.logger.error(f"Failed to load database content: {e}")
-                    return False
-
-            # Clean up any stale locks first (if available)
-            if self.file_lock_manager:
-                self.file_lock_manager.cleanup_stale_locks()
-
-            # Use safe operations for upload (with fallback)
-            if self.safe_operations:
-                success = self.safe_operations.atomic_upload(content, local_path, session_id)
-            else:
-                print("[PROTECTION] Using fallback upload method")
-                success = self.upload_database(local_path, session_id)
-
-            if success:
-                cars_count = len(content.get('history', {}))
-                total_entries = sum(len(hist) for hist in content.get('history', {}).values())
-                print(f"[PROTECTED DB] Database uploaded successfully: {cars_count} cars, {total_entries} entries")
-                self.logger.info(f"Protected upload successful")
-                return True
-            else:
-                print(f"[PROTECTED DB] Database upload failed - check logs for details")
-                self.logger.error(f"Protected upload failed")
-                return False
-
-        finally:
-            # Always release the lock
-            if lock_handle:
-                self.file_lock_manager.release_database_lock(lock_handle)
-
-    def get_database_status(self) -> dict:
-        """Get comprehensive status of the database protection system.
-
-        Returns:
-            Dictionary with status information including backups, validation, etc.
-        """
-        try:
-            status = {
-                'timestamp': datetime.now().isoformat(),
-                'backups': {
-                    'available': 0,
-                    'latest': None,
-                    'total_size': 0
-                },
-                'local_database': {
-                    'exists': False,
-                    'valid': False,
-                    'cars': 0,
-                    'entries': 0,
-                    'size': 0
-                }
-            }
-
-            # Check local database
-            local_path = os.path.join(RESULTS_DIR, 'price_history.json')
-            if os.path.exists(local_path):
-                status['local_database']['exists'] = True
-                status['local_database']['size'] = os.path.getsize(local_path)
-
-                try:
-                    with open(local_path, 'r', encoding='utf-8') as f:
-                        content = json.load(f)
-
-                    validator = DatabaseValidator()
-                    is_valid, _, _ = validator.validate_database(content)
-                    status['local_database']['valid'] = is_valid
-                    status['local_database']['cars'] = len(content.get('history', {}))
-                    status['local_database']['entries'] = sum(len(hist) for hist in content.get('history', {}).values())
-                except Exception as e:
-                    status['local_database']['error'] = str(e)
-
-            # Check backups
-            backup_manager = DatabaseBackupManager()
+        for attempt in range(3):  # Simple 3 retries
             try:
-                backup_files = []
-                backup_dir = backup_manager.backup_dir
-                if os.path.exists(backup_dir):
-                    for filename in os.listdir(backup_dir):
-                        if filename.startswith("price_history_backup_") and filename.endswith(".json"):
-                            file_path = os.path.join(backup_dir, filename)
-                            backup_files.append((file_path, os.path.getmtime(file_path), os.path.getsize(file_path)))
-
-                    backup_files.sort(key=lambda x: x[1], reverse=True)
-                    status['backups']['available'] = len(backup_files)
-                    status['backups']['total_size'] = sum(size for _, _, size in backup_files)
-
-                    if backup_files:
-                        latest_path, latest_mtime, latest_size = backup_files[0]
-                        status['backups']['latest'] = {
-                            'filename': os.path.basename(latest_path),
-                            'timestamp': datetime.fromtimestamp(latest_mtime).isoformat(),
-                            'size': latest_size
-                        }
-            except Exception as e:
-                status['backups']['error'] = str(e)
-
-            return status
-
-        except Exception as e:
-            return {'error': str(e), 'timestamp': datetime.now().isoformat()}
-
-
-def test_github_upload():
-    """Test GitHub upload functionality with a dummy CSV file"""
-    print("\n[TEST] TESTING GITHUB UPLOAD FUNCTIONALITY")
-    print("="*50)
-    
-    try:
-        # Check if config file exists (try both app directory and data directory)
-        github_config_path = None
-        possible_paths = [
-            os.path.join(get_app_dir(), "github-config.json"),
-            os.path.join(BASE_DIR, "github-config.json"),
-            "github-config.json"
-        ]
-        
-        for path in possible_paths:
-            if os.path.exists(path):
-                github_config_path = path
-                break
+                print(f"[DB SYNC] Uploading database (attempt {attempt + 1}/3)")
                 
-        if not github_config_path:
-            print("[ERROR] github-config.json not found!")
-            return False
-            
-        # Load config
-        with open(github_config_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-        
-        print("[OK] Configuration loaded successfully")
-        print(f"[INFO] Username: {config['username']}")
-        print(f"[INFO] Repository: {config['repo']}")
-        print(f"[INFO] Token: {config['token'][:8]}...{config['token'][-4:]}")
-        
-        # Create test data
-        test_data = [
-            {
-                'titlu': 'Test Car 1',
-                'pret_text': '€15,000',
-                'pret_numeric': 15000,
-                'an': 2020,
-                'kilometraj': '50,000',
-                'locatie': 'Bucharest',
-                'link': 'https://test.example.com',
-                'imagini_urls': 'https://img1.example.com;https://img2.example.com',
-                'combustibil': 'Benzina',
-                'transmisie': 'Manuala',
-                'caroserie': 'Berlina',
-                'marca': 'Test Brand',
-                'model': 'Test Model',
-                'id_unic': 'TEST001',
-                'data_scraping': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            },
-            {
-                'titlu': 'Test Car 2', 
-                'pret_text': '€25,000',
-                'pret_numeric': 25000,
-                'an': 2021,
-                'kilometraj': '30,000',
-                'locatie': 'Cluj-Napoca',
-                'link': 'https://test2.example.com',
-                'imagini_urls': 'https://img3.example.com',
-                'combustibil': 'Diesel',
-                'transmisie': 'Automata',
-                'caroserie': 'SUV',
-                'marca': 'Another Brand',
-                'model': 'Another Model',
-                'id_unic': 'TEST002',
-                'data_scraping': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            }
-        ]
-        
-        # Create temporary CSV file
-        import tempfile
-        df = pd.DataFrame(test_data)
-        
-        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.csv', encoding='utf-8') as temp_file:
-            df.to_csv(temp_file.name, index=False, encoding='utf-8')
-            temp_csv_path = temp_file.name
-            
-        print(f"[INFO] Created test CSV: {temp_csv_path}")
-        print(f"[INFO] Test data rows: {len(test_data)}")
-        
-        # Initialize GitHub uploader
-        github_uploader = GitHubUploader(
-            username=config['username'],
-            repo=config['repo'],
-            token=config['token']
-        )
-        
-        # Perform upload
-        print("\n[START] Starting test upload...")
-        github_url = github_uploader.upload_csv_to_github(temp_csv_path, len(test_data))
-        
-        # Clean up
-        try:
-            os.unlink(temp_csv_path)
-            print(f"[CLEANUP] Cleaned up temp file: {temp_csv_path}")
-        except:
-            pass
-            
-        if github_url:
-            print(f"\n[SUCCESS] TEST SUCCESSFUL!")
-            print(f"[OK] File uploaded successfully")
-            print(f"[URL] {github_url}")
-            print(f"[WEB] The file should now be visible in the web UI")
-            return True
-        else:
-            print(f"\n[FAILED] TEST FAILED!")
-            print(f"Upload returned None - check logs above for details")
-            return False
-            
-    except Exception as e:
-        print(f"[EXCEPTION] TEST EXCEPTION: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-# ---------- Database Protection Classes ----------
-class DatabaseBackupManager:
-    """Manages local backups of the price history database with validation and recovery."""
-
-    def __init__(self, backup_dir: str = None):
-        """Initialize backup manager.
-
-        Args:
-            backup_dir: Directory to store backups (default: RESULTS_DIR/database_backups)
-        """
-        if backup_dir is None:
-            backup_dir = os.path.join(RESULTS_DIR, "database_backups")
-
-        self.backup_dir = backup_dir
-        self.max_backups = MAX_DATABASE_BACKUPS
-        self.logger = logging.getLogger("DatabaseBackupManager")
-
-        # Ensure backup directory exists
-        os.makedirs(self.backup_dir, exist_ok=True)
-
-    def create_backup(self, database_content: dict, session_id: str = None) -> Optional[str]:
-        """Create a timestamped backup of the database.
-
-        Args:
-            database_content: The database content to backup
-            session_id: Optional session ID for unique backup naming
-
-        Returns:
-            Path to the backup file if successful, None otherwise
-        """
-        try:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            session_suffix = f"_{session_id}" if session_id else ""
-            backup_filename = f"price_history_backup_{timestamp}{session_suffix}.json"
-            backup_path = os.path.join(self.backup_dir, backup_filename)
-
-            # Validate content before backing up
-            validator = DatabaseValidator()
-            is_valid, error_msg, corrected_data = validator.validate_database(database_content)
-
-            if not is_valid:
-                self.logger.warning(f"Backing up potentially corrupted database: {error_msg}")
-                # Use corrected data if available
-                if corrected_data:
-                    database_content = corrected_data
-
-            # Write backup with atomic operation
-            temp_path = backup_path + ".tmp"
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                json.dump(database_content, f, ensure_ascii=False, indent=2)
-
-            # Atomic move
-            shutil.move(temp_path, backup_path)
-
-            self.logger.info(f"Database backup created: {backup_filename}")
-
-            # Clean up old backups
-            self._cleanup_old_backups()
-
-            return backup_path
-
-        except Exception as e:
-            self.logger.error(f"Failed to create backup: {e}")
-            return None
-
-    def get_latest_valid_backup(self) -> Optional[Tuple[str, dict]]:
-        """Get the most recent valid backup.
-
-        Returns:
-            Tuple of (backup_path, database_content) if found, None otherwise
-        """
-        try:
-            backup_files = []
-            for filename in os.listdir(self.backup_dir):
-                if filename.startswith("price_history_backup_") and filename.endswith(".json"):
-                    file_path = os.path.join(self.backup_dir, filename)
-                    backup_files.append((file_path, os.path.getmtime(file_path)))
-
-            # Sort by modification time, newest first
-            backup_files.sort(key=lambda x: x[1], reverse=True)
-
-            validator = DatabaseValidator()
-
-            for backup_path, _ in backup_files:
-                try:
-                    with open(backup_path, 'r', encoding='utf-8') as f:
-                        content = json.load(f)
-
-                    is_valid, error_msg, corrected_data = validator.validate_database(content)
-
-                    if is_valid:
-                        self.logger.info(f"Found valid backup: {os.path.basename(backup_path)}")
-                        return backup_path, content
-                    elif corrected_data:
-                        self.logger.info(f"Found correctable backup: {os.path.basename(backup_path)}")
-                        return backup_path, corrected_data
-                    else:
-                        self.logger.warning(f"Invalid backup skipped: {os.path.basename(backup_path)} - {error_msg}")
-
-                except Exception as e:
-                    self.logger.warning(f"Failed to read backup {os.path.basename(backup_path)}: {e}")
-                    continue
-
-            self.logger.warning("No valid backups found")
-            return None
-
-        except Exception as e:
-            self.logger.error(f"Error searching for backups: {e}")
-            return None
-
-    def restore_from_backup(self, backup_path: str, target_path: str) -> bool:
-        """Restore database from a specific backup.
-
-        Args:
-            backup_path: Path to the backup file
-            target_path: Where to restore the database
-
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            with open(backup_path, 'r', encoding='utf-8') as f:
-                content = json.load(f)
-
-            validator = DatabaseValidator()
-            is_valid, error_msg, corrected_data = validator.validate_database(content)
-
-            if corrected_data:
-                content = corrected_data
-
-            if not is_valid and not corrected_data:
-                self.logger.error(f"Cannot restore from invalid backup: {error_msg}")
-                return False
-
-            # Atomic write
-            temp_path = target_path + ".tmp"
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                json.dump(content, f, ensure_ascii=False, indent=2)
-
-            shutil.move(temp_path, target_path)
-
-            self.logger.info(f"Database restored from backup: {os.path.basename(backup_path)}")
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Failed to restore from backup: {e}")
-            return False
-
-    def _cleanup_old_backups(self):
-        """Remove backups older than retention period and keep only max_backups."""
-        try:
-            cutoff_date = datetime.now() - timedelta(days=BACKUP_RETENTION_DAYS)
-            backup_files = []
-
-            for filename in os.listdir(self.backup_dir):
-                if filename.startswith("price_history_backup_") and filename.endswith(".json"):
-                    file_path = os.path.join(self.backup_dir, filename)
-                    mtime = os.path.getmtime(file_path)
-                    backup_files.append((file_path, mtime))
-
-            # Sort by modification time, newest first
-            backup_files.sort(key=lambda x: x[1], reverse=True)
-
-            # Remove old backups
-            removed_count = 0
-            for file_path, mtime in backup_files[self.max_backups:]:
-                try:
-                    os.remove(file_path)
-                    removed_count += 1
-                except Exception as e:
-                    self.logger.warning(f"Failed to remove old backup {os.path.basename(file_path)}: {e}")
-
-            # Remove backups older than retention period
-            for file_path, mtime in backup_files:
-                if datetime.fromtimestamp(mtime) < cutoff_date:
-                    try:
-                        os.remove(file_path)
-                        removed_count += 1
-                    except Exception as e:
-                        self.logger.warning(f"Failed to remove expired backup {os.path.basename(file_path)}: {e}")
-
-            if removed_count > 0:
-                self.logger.info(f"Cleaned up {removed_count} old backups")
-
-        except Exception as e:
-            self.logger.error(f"Failed to cleanup old backups: {e}")
-
-
-class DatabaseValidator:
-    """Validates and sanitizes price history database content."""
-
-    def __init__(self):
-        self.logger = logging.getLogger("DatabaseValidator")
-
-    def validate_database(self, db_content: dict) -> Tuple[bool, str, Optional[dict]]:
-        """Validate database content and attempt correction.
-
-        Args:
-            db_content: Database content to validate
-
-        Returns:
-            Tuple of (is_valid, error_message, corrected_data)
-        """
-        try:
-            if not isinstance(db_content, dict):
-                return False, "Database content is not a dictionary", None
-
-            # Check required top-level keys
-            if 'history' not in db_content:
-                self.logger.warning("Missing 'history' key, adding empty history")
-                db_content['history'] = {}
-
-            if 'metadata' not in db_content:
-                self.logger.warning("Missing 'metadata' key, adding empty metadata")
-                db_content['metadata'] = {}
-
-            # Validate history structure
-            history = db_content.get('history', {})
-            if not isinstance(history, dict):
-                self.logger.error("History is not a dictionary")
-                return False, "History field is not a dictionary", None
-
-            # Sanitize history entries
-            corrected_history = {}
-            total_entries = 0
-            corrupted_entries = 0
-
-            for car_id, car_history in history.items():
-                if not isinstance(car_history, list):
-                    self.logger.warning(f"Invalid history for car {car_id}, skipping")
-                    corrupted_entries += 1
-                    continue
-
-                corrected_car_history = []
-                for entry in car_history:
-                    if self._validate_price_entry(entry):
-                        corrected_car_history.append(entry)
-                        total_entries += 1
-                    else:
-                        corrupted_entries += 1
-
-                if corrected_car_history:
-                    corrected_history[str(car_id)] = corrected_car_history
-
-            # Update database with corrected data
-            corrected_db = {
-                'history': corrected_history,
-                'metadata': db_content.get('metadata', {})
-            }
-
-            # Add validation metadata
-            corrected_db['metadata'].update({
-                'last_validated': datetime.now().isoformat(),
-                'validation_stats': {
-                    'total_cars': len(corrected_history),
-                    'total_entries': total_entries,
-                    'corrupted_entries_removed': corrupted_entries
-                }
-            })
-
-            # Determine if database is valid
-            is_valid = corrupted_entries == 0
-
-            if corrupted_entries > 0:
-                error_msg = f"Removed {corrupted_entries} corrupted entries"
-                self.logger.warning(error_msg)
-            else:
-                error_msg = "Database is valid"
-                self.logger.info(f"Validated database: {len(corrected_history)} cars, {total_entries} entries")
-
-            return is_valid, error_msg, corrected_db
-
-        except Exception as e:
-            error_msg = f"Database validation failed: {e}"
-            self.logger.error(error_msg)
-            return False, error_msg, None
-
-    def _validate_price_entry(self, entry: dict) -> bool:
-        """Validate a single price history entry."""
-        try:
-            if not isinstance(entry, dict):
-                return False
-
-            required_fields = ['timestamp', 'price', 'url']
-            for field in required_fields:
-                if field not in entry:
-                    return False
-
-            # Validate timestamp
-            if not isinstance(entry['timestamp'], str):
-                return False
-
-            # Validate price
-            if not isinstance(entry['price'], (int, float)) or entry['price'] < 0:
-                return False
-
-            # Validate URL
-            if not isinstance(entry['url'], str) or not entry['url'].startswith('http'):
-                return False
-
-            return True
-
-        except Exception:
-            return False
-
-    def sanitize_database(self, db_content: dict) -> dict:
-        """Sanitize database content by removing invalid entries."""
-        _, _, corrected_data = self.validate_database(db_content)
-        return corrected_data if corrected_data else db_content
-
-
-class SafeDatabaseOperations:
-    """Handles safe database download and upload operations with comprehensive protection."""
-
-    def __init__(self, github_sync: 'GitHubDatabaseSync'):
-        """Initialize with GitHub sync instance."""
-        self.github_sync = github_sync
-        self.backup_manager = DatabaseBackupManager()
-        self.validator = DatabaseValidator()
-        self.logger = logging.getLogger("SafeDatabaseOperations")
-
-    def safe_download(self, local_path: str = None, session_id: str = None) -> Tuple[bool, Optional[dict], str]:
-        """Safely download database with comprehensive fallback chain.
-
-        Args:
-            local_path: Where to save the database
-            session_id: Optional session ID for unique operations
-
-        Returns:
-            Tuple of (success, database_content, source_description)
-        """
-        if local_path is None:
-            local_path = os.path.join(RESULTS_DIR, 'price_history.json')
-
-        source_chain = []
-
-        # Strategy 1: Try GitHub download with retries
-        self.logger.info("Attempting GitHub download with protection...")
-
-        for attempt in range(DOWNLOAD_RETRY_ATTEMPTS):
-            try:
-                # Add random delay to prevent race conditions
-                delay = random.uniform(*GITHUB_RATE_LIMIT_DELAY)
-                time.sleep(delay)
-
-                success = self.github_sync.download_database(local_path)
-
-                if success and os.path.exists(local_path):
-                    # Validate downloaded content
-                    try:
-                        with open(local_path, 'r', encoding='utf-8') as f:
-                            content = json.load(f)
-
-                        is_valid, error_msg, corrected_data = self.validator.validate_database(content)
-
-                        if is_valid:
-                            # Create backup of successful download
-                            self.backup_manager.create_backup(content, session_id)
-                            source_chain.append(f"GitHub download (attempt {attempt + 1})")
-                            return True, content, " -> ".join(source_chain)
-
-                        elif corrected_data:
-                            self.logger.warning(f"GitHub download corrupted but correctable: {error_msg}")
-                            # Save corrected data and create backup
-                            with open(local_path, 'w', encoding='utf-8') as f:
-                                json.dump(corrected_data, f, ensure_ascii=False, indent=2)
-                            self.backup_manager.create_backup(corrected_data, session_id)
-                            source_chain.append(f"GitHub download corrected (attempt {attempt + 1})")
-                            return True, corrected_data, " -> ".join(source_chain)
-
-                        else:
-                            self.logger.warning(f"GitHub download validation failed: {error_msg}")
-
-                    except json.JSONDecodeError as e:
-                        self.logger.warning(f"GitHub download contains invalid JSON: {e}")
-
-                else:
-                    self.logger.warning(f"GitHub download failed (attempt {attempt + 1})")
-
-            except Exception as e:
-                self.logger.warning(f"GitHub download error (attempt {attempt + 1}): {e}")
-
-            # Exponential backoff
-            if attempt < DOWNLOAD_RETRY_ATTEMPTS - 1:
-                backoff_delay = (2 ** attempt) * random.uniform(1, 3)
-                time.sleep(backoff_delay)
-
-        source_chain.append("GitHub download failed")
-
-        # Strategy 2: Try local backup
-        self.logger.info("GitHub download failed, trying local backup...")
-        backup_result = self.backup_manager.get_latest_valid_backup()
-
-        if backup_result:
-            backup_path, backup_content = backup_result
-
-            # Restore from backup
-            try:
-                with open(local_path, 'w', encoding='utf-8') as f:
-                    json.dump(backup_content, f, ensure_ascii=False, indent=2)
-
-                source_chain.append(f"Local backup ({os.path.basename(backup_path)})")
-                self.logger.info(f"Restored database from backup: {os.path.basename(backup_path)}")
-                return True, backup_content, " -> ".join(source_chain)
-
-            except Exception as e:
-                self.logger.error(f"Failed to restore from backup: {e}")
-
-        source_chain.append("Local backup failed")
-
-        # Strategy 3: Try existing local file if it exists
-        if os.path.exists(local_path):
-            self.logger.info("Trying existing local database file...")
-            try:
+                # Read local file
                 with open(local_path, 'r', encoding='utf-8') as f:
-                    content = json.load(f)
-
-                is_valid, error_msg, corrected_data = self.validator.validate_database(content)
-
-                if corrected_data:
-                    final_content = corrected_data
-                    # Save corrected version
-                    with open(local_path, 'w', encoding='utf-8') as f:
-                        json.dump(final_content, f, ensure_ascii=False, indent=2)
-                    # Create backup
-                    self.backup_manager.create_backup(final_content, session_id)
-                    source_chain.append("Existing local file (corrected)")
-                    return True, final_content, " -> ".join(source_chain)
-
-            except Exception as e:
-                self.logger.warning(f"Existing local file is invalid: {e}")
-
-        # Strategy 4: Create empty database as last resort
-        self.logger.warning("All recovery strategies failed, creating empty database")
-        empty_db = {
-            'history': {},
-            'metadata': {
-                'created': datetime.now().isoformat(),
-                'created_reason': 'emergency_fallback',
-                'recovery_chain': source_chain
-            }
-        }
-
-        try:
-            os.makedirs(os.path.dirname(local_path), exist_ok=True)
-            with open(local_path, 'w', encoding='utf-8') as f:
-                json.dump(empty_db, f, ensure_ascii=False, indent=2)
-
-            source_chain.append("Emergency empty database")
-            self.logger.warning("Created emergency empty database - all cars will be treated as new")
-            return True, empty_db, " -> ".join(source_chain)
-
-        except Exception as e:
-            self.logger.error(f"Failed to create emergency database: {e}")
-            return False, None, " -> ".join(source_chain + ["Emergency creation failed"])
-
-    def atomic_upload(self, content: dict, local_path: str = None, session_id: str = None) -> bool:
-        """Safely upload database with atomic operations and retries.
-
-        Args:
-            content: Database content to upload
-            local_path: Local file path
-            session_id: Optional session ID
-
-        Returns:
-            True if successful, False otherwise
-        """
-        if local_path is None:
-            local_path = os.path.join(RESULTS_DIR, 'price_history.json')
-
-        # Create backup before upload attempt
-        backup_path = self.backup_manager.create_backup(content, session_id)
-        if not backup_path:
-            self.logger.error("Failed to create pre-upload backup")
-            return False
-
-        # Validate content before upload
-        is_valid, error_msg, corrected_data = self.validator.validate_database(content)
-
-        if corrected_data:
-            content = corrected_data
-            self.logger.info("Using corrected database for upload")
-
-        if not is_valid and not corrected_data:
-            self.logger.error(f"Cannot upload invalid database: {error_msg}")
-            return False
-
-        # Save validated content locally with atomic operation
-        try:
-            temp_path = local_path + f".upload_tmp_{session_id or int(time.time())}"
-
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                json.dump(content, f, ensure_ascii=False, indent=2)
-
-            # Verify written content
-            with open(temp_path, 'r', encoding='utf-8') as f:
-                verify_content = json.load(f)
-
-            verify_valid, _, _ = self.validator.validate_database(verify_content)
-            if not verify_valid:
-                os.remove(temp_path)
-                self.logger.error("Written content validation failed")
-                return False
-
-            # Atomic move to final location
-            shutil.move(temp_path, local_path)
-
-        except Exception as e:
-            self.logger.error(f"Failed to save database locally: {e}")
-            return False
-
-        # Attempt upload with retries
-        for attempt in range(UPLOAD_RETRY_ATTEMPTS):
-            try:
-                # Add random delay to prevent race conditions
-                delay = random.uniform(*GITHUB_RATE_LIMIT_DELAY)
-                time.sleep(delay)
-
-                success = self.github_sync.upload_database(local_path, session_id)
-
-                if success:
-                    self.logger.info(f"Database uploaded successfully (attempt {attempt + 1})")
-                    # Create backup of successful upload
-                    self.backup_manager.create_backup(content, f"{session_id}_uploaded")
+                    database = json.load(f)
+                
+                # Basic sanity check
+                if not isinstance(database, dict):
+                    print(f"[DB SYNC] Invalid database format: {type(database)}")
+                    return False
+                
+                import base64
+                file_content = json.dumps(database, ensure_ascii=False, indent=2)
+                encoded_content = base64.b64encode(file_content.encode('utf-8')).decode('utf-8')
+                
+                url = f"{self.base_url}/contents/price_history.json"
+                headers = {'Authorization': f'token {self.token}'}
+                
+                # Check if file exists to get SHA
+                sha = None
+                get_response = requests.get(url, headers=headers, timeout=30)
+                if get_response.status_code == 200:
+                    sha = get_response.json().get('sha')
+                
+                # Upload data
+                commit_message = f"Update price history database"
+                if session_id:
+                    commit_message += f" (session: {session_id})"
+                
+                payload = {
+                    'message': commit_message,
+                    'content': encoded_content
+                }
+                if sha:
+                    payload['sha'] = sha
+                
+                response = requests.put(url, headers=headers, json=payload, timeout=60)
+                
+                if response.status_code in [200, 201]:
+                    print(f"[DB SYNC] Database uploaded successfully ({len(database.get('history', {}))} entries)")
                     return True
-
                 else:
-                    self.logger.warning(f"Upload failed (attempt {attempt + 1})")
-
+                    print(f"[DB SYNC] Upload attempt {attempt + 1} failed (status: {response.status_code})")
+                    
             except Exception as e:
-                self.logger.warning(f"Upload error (attempt {attempt + 1}): {e}")
-
-            # Exponential backoff
-            if attempt < UPLOAD_RETRY_ATTEMPTS - 1:
-                backoff_delay = (2 ** attempt) * random.uniform(2, 5)
-                time.sleep(backoff_delay)
-
-        self.logger.error("All upload attempts failed")
+                print(f"[DB SYNC] Upload attempt {attempt + 1} error: {e}")
+                
+            if attempt < 2:  # Don't sleep after last attempt
+                time.sleep(2)  # Simple 2 second delay
+        
+        print("[DB SYNC] All upload attempts failed")
         return False
 
-
-class FileLockManager:
-    """Provides file locking mechanisms to prevent race conditions during database operations."""
-
-    def __init__(self, lock_dir: str = None):
-        """Initialize file lock manager.
-
-        Args:
-            lock_dir: Directory to store lock files (default: RESULTS_DIR/locks)
-        """
-        if lock_dir is None:
-            lock_dir = os.path.join(RESULTS_DIR, "locks")
-
-        self.lock_dir = lock_dir
-        self.logger = logging.getLogger("FileLockManager")
-
-        # Ensure lock directory exists
-        os.makedirs(self.lock_dir, exist_ok=True)
-
-    def acquire_database_lock(self, session_id: str = None, timeout: int = 30) -> Optional[object]:
-        """Acquire an exclusive lock for database operations.
-
-        Args:
-            session_id: Optional session ID for unique lock naming
-            timeout: Maximum time to wait for lock acquisition
-
-        Returns:
-            Lock file handle if successful, None otherwise
-        """
-        try:
-            lock_name = f"database_lock_{session_id or 'default'}.lock"
-            lock_path = os.path.join(self.lock_dir, lock_name)
-
-            # Create lock file
-            lock_file = open(lock_path, 'w')
-
-            # Try to acquire exclusive lock with timeout
-            start_time = time.time()
-            while time.time() - start_time < timeout:
-                try:
-                    if os.name == 'nt':  # Windows
-                        # Use Windows file locking
-                        import msvcrt
-                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
-                    else:  # Unix/Linux
-                        if fcntl:
-                            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        else:
-                            raise OSError("File locking not supported on this platform")
-
-                    # Write session info to lock file
-                    lock_file.write(f"session_id: {session_id or 'default'}\n")
-                    lock_file.write(f"timestamp: {datetime.now().isoformat()}\n")
-                    lock_file.write(f"pid: {os.getpid()}\n")
-                    lock_file.flush()
-
-                    self.logger.info(f"Database lock acquired: {lock_name}")
-                    return lock_file
-
-                except (IOError, OSError):
-                    # Lock is held by another process, wait a bit
-                    time.sleep(0.5)
-                    continue
-
-            # Timeout reached
-            lock_file.close()
-            self.logger.warning(f"Failed to acquire database lock within {timeout}s")
-            return None
-
-        except Exception as e:
-            self.logger.error(f"Error acquiring database lock: {e}")
-            return None
-
-    def release_database_lock(self, lock_handle: object):
-        """Release the database lock.
-
-        Args:
-            lock_handle: Lock file handle returned from acquire_database_lock
-        """
-        try:
-            if lock_handle and not lock_handle.closed:
-                try:
-                    if os.name == 'nt':  # Windows
-                        import msvcrt
-                        msvcrt.locking(lock_handle.fileno(), msvcrt.LK_UNLCK, 1)
-                    else:  # Unix/Linux
-                        if fcntl:
-                            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-                except Exception as unlock_error:
-                    # Log but don't fail if unlock fails
-                    self.logger.warning(f"Failed to unlock file: {unlock_error}")
-
-                # Always close the handle
-                try:
-                    lock_handle.close()
-                except Exception as close_error:
-                    self.logger.warning(f"Failed to close lock file: {close_error}")
-
-                self.logger.info("Database lock released")
-
-        except Exception as e:
-            self.logger.error(f"Error releasing database lock: {e}")
-
-    def cleanup_stale_locks(self, max_age_minutes: int = 60):
-        """Clean up stale lock files older than max_age_minutes.
-
-        Args:
-            max_age_minutes: Maximum age of lock files in minutes
-        """
-        try:
-            current_time = time.time()
-            cutoff_time = current_time - (max_age_minutes * 60)
-
-            for filename in os.listdir(self.lock_dir):
-                if filename.endswith('.lock'):
-                    lock_path = os.path.join(self.lock_dir, filename)
-                    try:
-                        stat = os.stat(lock_path)
-                        if stat.st_mtime < cutoff_time:
-                            # Check if lock is still active by trying to read it
-                            try:
-                                with open(lock_path, 'r') as f:
-                                    content = f.read()
-                                    if 'pid:' in content:
-                                        # Extract PID and check if process is still running
-                                        pid_line = [line for line in content.split('\n') if line.startswith('pid:')]
-                                        if pid_line:
-                                            try:
-                                                pid = int(pid_line[0].split(':')[1].strip())
-                                                if self._is_process_running(pid):
-                                                    continue  # Process still running, keep lock
-                                            except ValueError:
-                                                pass  # Invalid PID, remove lock
-
-                                # Lock is stale, remove it
-                                os.remove(lock_path)
-                                self.logger.info(f"Removed stale lock: {filename}")
-
-                            except Exception:
-                                # Error reading lock file, assume it's stale
-                                try:
-                                    os.remove(lock_path)
-                                    self.logger.info(f"Removed unreadable lock: {filename}")
-                                except Exception:
-                                    pass
-
-                    except Exception as e:
-                        self.logger.warning(f"Error processing lock file {filename}: {e}")
-
-        except Exception as e:
-            self.logger.error(f"Error cleaning up stale locks: {e}")
-
-    def _is_process_running(self, pid: int) -> bool:
-        """Check if a process with given PID is still running."""
-        try:
-            if os.name == 'nt':  # Windows
-                import subprocess
-                result = subprocess.run(['tasklist', '/FI', f'PID eq {pid}'],
-                                        capture_output=True, text=True, timeout=5)
-                return str(pid) in result.stdout
-            else:  # Unix/Linux
-                os.kill(pid, 0)
-                return True
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-
-
-# ---------- Modele de date ----------
+    # ---------- Modele de date ----------
 @dataclass
 class SearchConfig:
     brands: List[str]
@@ -1902,38 +740,20 @@ class OLXScrapingEngine:
         self.should_stop = lambda: False
         self.headless = False  # GitHub Actions headless mode support
         
-    def load_duplicate_database(self, validated_content: dict = None):
-        """Load price history database and convert to duplicate_db format with validation"""
+    def load_duplicate_database(self, database_content: dict = None):
+        """Load price history database and convert to duplicate_db format"""
         db_file = os.path.join(RESULTS_DIR, 'price_history.json')
 
         try:
-            # Use provided validated content or load and validate from file
-            if validated_content:
-                data = validated_content
-                print("[DATABASE] Using pre-validated database content")
+            # Use provided content or load from file
+            if database_content:
+                data = database_content
+                print("[DATABASE] Using provided database content")
             else:
                 if os.path.exists(db_file):
                     with open(db_file, 'r', encoding='utf-8') as f:
-                        raw_data = json.load(f)
-
-                    # Validate and sanitize the loaded data
-                    validator = DatabaseValidator()
-                    is_valid, error_msg, corrected_data = validator.validate_database(raw_data)
-
-                    if corrected_data:
-                        data = corrected_data
-                        print(f"[DATABASE] Database corrected: {error_msg}")
-
-                        # Save corrected data back to file
-                        with open(db_file, 'w', encoding='utf-8') as f:
-                            json.dump(data, f, ensure_ascii=False, indent=2)
-                    elif is_valid:
-                        data = raw_data
-                        print("[DATABASE] Database validation passed")
-                    else:
-                        print(f"[DATABASE] WARNING: Invalid database detected: {error_msg}")
-                        # Use raw data but log the issue
-                        data = raw_data
+                        data = json.load(f)
+                    print(f"[DATABASE] Loaded local database with {len(data.get('history', {}))} entries")
                 else:
                     print("[DATABASE] No existing database file found, starting fresh")
                     data = {'history': {}, 'metadata': {}}
@@ -2042,7 +862,7 @@ class OLXScrapingEngine:
         print(f"[DATABASE MERGE] Total entries: {total_entries}")
         print(f"[DATABASE MERGE] New cars: {new_entries}, Updated cars: {updated_entries}")
         
-        # Save updated history with validation
+        # Save updated history
         updated_data = {
             'history': existing_history,
             'metadata': {
@@ -3602,17 +2422,22 @@ def run_headless_scraper():
                     token=github_config['token']
                 )
                 
-                # Use protected database operations
-                database_loaded = False
+                # Download database with simple operations
+                if github_db_sync.download_database():
+                    engine.load_duplicate_database()
 
-                success, validated_content, source_desc = github_db_sync.safe_download_database(session_id=args.session_id)
+                    # Simple safeguard: warn about suspiciously small database
+                    db_size = len(engine.duplicate_db)
+                    print(f"[DATABASE] Successfully loaded {db_size} cars")
 
-                if success and validated_content:
-                    engine.load_duplicate_database(validated_content)
-                    database_loaded = True
-                    print(f"[PROTECTED DB] Successfully loaded {len(engine.duplicate_db)} cars ({source_desc})")
+                    if 0 < db_size < 50:
+                        print(f"[WARNING] Suspiciously small database ({db_size} cars)")
+                        print("[WARNING] This might be corrupted - manual review recommended")
+                    elif db_size == 0:
+                        print("[INFO] Empty database - starting fresh scraping session")
                 else:
-                    print(f"[PROTECTED DB] CRITICAL: All database recovery strategies failed! ({source_desc})")
+                    print(f"[DATABASE] Download failed, starting fresh")
+                    engine.load_duplicate_database()  # Will create empty DB
                     
             except Exception as e:
                 print(f"[DB SYNC] CRITICAL ERROR: {e}")
@@ -3680,17 +2505,17 @@ def run_headless_scraper():
         csv_file = os.path.join(args.output_dir, f'olx_results_{args.session_id}_{timestamp}.csv')
         df.to_csv(csv_file, index=False, encoding='utf-8')
         
-        # Step 5: Upload database to GitHub BEFORE uploading CSV (Protected)
-        print("\n[WORKFLOW] Step 5: Upload updated database to GitHub (Protected)...")
+        # Step 5: Upload database to GitHub BEFORE uploading CSV
+        print("\n[WORKFLOW] Step 5: Upload updated database to GitHub...")
         if github_db_sync:
             try:
-                if github_db_sync.safe_upload_database(session_id=args.session_id):
-                    print("[WORKFLOW] Step 5 Complete: Database uploaded to GitHub with full protection")
+                if github_db_sync.upload_database(session_id=args.session_id):
+                    print("[WORKFLOW] Step 5 Complete: Database uploaded to GitHub")
                 else:
-                    print("[WORKFLOW] Step 5 Failed: Protected database upload failed - duplicate detection may not work next run")
+                    print("[WORKFLOW] Step 5 Failed: Database upload failed - duplicate detection may not work next run")
             except Exception as e:
                 print(f"[WORKFLOW] Step 5 Error: {e}")
-                logger.error(f"Protected database upload error: {e}")
+                logger.error(f"Database upload error: {e}")
         else:
             print("[WORKFLOW] Step 5 Skipped: No GitHub sync configured")
         
