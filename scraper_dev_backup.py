@@ -772,34 +772,34 @@ class OLXScrapingEngine:
                         'last_seen': latest_entry.get('date', ''),
                         'first_seen': history[0].get('date', '') if history else latest_entry.get('date', '')
                     }
-                
-                # CRITICAL SAFETY CHECK
-                cars_count = len(self.duplicate_db)
-                if cars_count < 100 and cars_count > 0:
-                    print(f"[DATABASE] WARNING: Database suspiciously small ({cars_count} cars)")
-                    print(f"[DATABASE] This might indicate corruption - manual review recommended")
-                
-                print(f"[DATABASE] Loaded {cars_count} cars from price history")
-                print(f"[DATABASE] Price history contains {len(history_data)} car records")
-                self.logger.info(f"Loaded {cars_count} known cars from price history")
-                
-                # Enhanced logging for debugging
-                if cars_count > 0:
-                    sample_ids = list(self.duplicate_db.keys())[:5]
-                    print(f"[DATABASE] Sample IDs: {sample_ids}")
-                    
-                    # Sample the first 5 IDs with better error handling
-                    sample_count = min(5, len(sample_ids))
-                    if sample_count > 0:
-                        print(f"[DATABASE] Sample of {sample_count} cars from history:")
-                        for i in range(sample_count):
-                            try:
-                                car_id = sample_ids[i]
-                                car_data = self.duplicate_db[car_id]
-                                history_entries = len(history_data.get(car_id, []))
-                                print(f"  - {car_id}: {car_data.get('title', 'N/A')[:40]}... ({history_entries} entries)")
-                            except Exception as sample_e:
-                                print(f"  - Error displaying sample {i}: {sample_e}")
+
+            # MOVE ALL LOGGING OUTSIDE THE LOOP - EXECUTE ONLY ONCE
+            cars_count = len(self.duplicate_db)
+            if cars_count < 100 and cars_count > 0:
+                print(f"[DATABASE] WARNING: Database suspiciously small ({cars_count} cars)")
+                print(f"[DATABASE] This might indicate corruption - manual review recommended")
+
+            print(f"[DATABASE] Loaded {cars_count} cars from price history")
+            print(f"[DATABASE] Price history contains {len(history_data)} car records")
+            self.logger.info(f"Loaded {cars_count} known cars from price history")
+
+            # Enhanced logging for debugging - ONLY ONCE
+            if cars_count > 0:
+                sample_ids = list(self.duplicate_db.keys())[:5]
+                print(f"[DATABASE] Sample IDs: {sample_ids}")
+
+                # Sample the first 5 IDs with better error handling
+                sample_count = min(5, len(sample_ids))
+                if sample_count > 0:
+                    print(f"[DATABASE] Sample of {sample_count} cars from history:")
+                    for i in range(sample_count):
+                        try:
+                            car_id = sample_ids[i]
+                            car_data = self.duplicate_db[car_id]
+                            history_entries = len(history_data.get(car_id, []))
+                            print(f"  - {car_id}: {car_data.get('title', 'N/A')[:40]}... ({history_entries} entries)")
+                        except Exception as sample_e:
+                            print(f"  - Error displaying sample {i}: {sample_e}")
                         
             else:
                 print(f"[DATABASE] No price history file found at: {db_file}")
@@ -981,7 +981,7 @@ class OLXScrapingEngine:
                 filtered_cars.append(car)
                 new_count += 1
                 if i < sample_count:
-                    print(f"    ✓ NEW CAR - Not in database")
+                    print(f"    + NEW CAR - Not in database")
             else:
                 # Car exists in database - check for price change
                 if i < sample_count:
@@ -1000,22 +1000,22 @@ class OLXScrapingEngine:
                             old_price = rec.get('last_price', 0)
                             self.logger.info(f"Price change detected for {car.title}: {old_price} -> {car.price_numeric}")
                             if i < sample_count:
-                                print(f"    ✓ PRICE CHANGE - Keeping car")
+                                print(f"    + PRICE CHANGE - Keeping car")
                         else:
                             # Duplicate with no significant price change
                             duplicate_count += 1
                             if i < sample_count:
-                                print(f"    ✗ DUPLICATE - No significant price change")
+                                print(f"    - DUPLICATE - No significant price change")
                     else:
                         # No price to compare, treat as duplicate
                         duplicate_count += 1
                         if i < sample_count:
-                            print(f"    ✗ DUPLICATE - No price data to compare")
+                            print(f"    - DUPLICATE - No price data to compare")
                 except Exception as e:
                     # Error in price comparison, treat as duplicate
                     duplicate_count += 1
                     if i < sample_count:
-                        print(f"    ✗ DUPLICATE - Error in comparison: {e}")
+                        print(f"    - DUPLICATE - Error in comparison: {e}")
         
         print(f"\n[DUPLICATE FILTER] Summary:")
         print(f"  - New cars: {new_count}")
