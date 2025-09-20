@@ -470,7 +470,8 @@ class GitHubDatabaseSync:
             try:
                 print(f"[DB SYNC] Downloading database (attempt {attempt + 1}/3)")
                 
-                url = f"{self.base_url}/contents/data/price_history.json"
+                db_path = getattr(self, 'database_path', 'data/price_history.json')
+                url = f"{self.base_url}/contents/{db_path}"
                 headers = {'Authorization': f'token {self.token}'}
                 
                 response = requests.get(url, headers=headers, timeout=30)
@@ -541,7 +542,8 @@ class GitHubDatabaseSync:
                 file_content = json.dumps(database, ensure_ascii=False, indent=2)
                 encoded_content = base64.b64encode(file_content.encode('utf-8')).decode('utf-8')
                 
-                url = f"{self.base_url}/contents/data/price_history.json"
+                db_path = getattr(self, 'database_path', 'data/price_history.json')
+                url = f"{self.base_url}/contents/{db_path}"
                 headers = {'Authorization': f'token {self.token}'}
                 
                 # Check if file exists to get SHA
@@ -2387,6 +2389,11 @@ def run_headless_scraper():
         github_config_path = None
         github_db_sync = None
         
+        # Extract database path from configuration
+        data_repo_config = json_config.get('data_repo', {})
+        database_path = data_repo_config.get('database_path', 'data/price_history.json')
+        print(f"[CONFIG] Using database path: {database_path}")
+        
         # Find GitHub config
         config_files = ["github-config.json", "github_config.json", 
                        os.path.join(args.output_dir, "github-config.json")]
@@ -2411,6 +2418,10 @@ def run_headless_scraper():
                     repo='olx-csv-data',  # Data repository
                     token=github_config['token']
                 )
+                
+                # Set the correct database path from configuration
+                github_db_sync.database_path = database_path
+
                 
                 # Download database with simple operations
                 if github_db_sync.download_database():
@@ -2626,4 +2637,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
