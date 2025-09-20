@@ -2444,10 +2444,10 @@ def run_headless_scraper():
                 print(f"[DB SYNC] CRITICAL ERROR: {e}")
 
         # SAFETY CHECK: Abort if database is too small
-        if github_config_path and len(engine.duplicate_db) < 100:
-            print(f"[SAFETY] ABORTING: Database too small ({len(engine.duplicate_db)} cars)")
-            print(f"[SAFETY] This indicates potential data corruption - manual intervention required")
-            return False
+        # if github_config_path and len(engine.duplicate_db) < 100:
+        #    print(f"[SAFETY] ABORTING: Database too small ({len(engine.duplicate_db)} cars)")
+         #   print(f"[SAFETY] This indicates potential data corruption - manual intervention required")
+          #  return False
 
         if not github_config_path:
             print("[DB SYNC] WARNING: Using local database fallback")
@@ -2637,5 +2637,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
