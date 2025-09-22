@@ -1,4 +1,4 @@
-name: OLX Scraper
+name: OLX Scraper with Supabase
 on:
   workflow_dispatch:
     inputs:
@@ -16,6 +16,7 @@ on:
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     
     steps:
     - name: Checkout repository
@@ -32,27 +33,72 @@ jobs:
         install-chromedriver: true
         install-dependencies: true
         
-    - name: Start Xvfb
+    - name: Start Xvfb (Virtual Display)
       run: |
         Xvfb :99 -screen 0 1024x768x24 > /dev/null 2>&1 &
-        sleep 2
+        sleep 3
+        echo "Virtual display started"
         
     - name: Install Python dependencies
       run: |
         pip install --upgrade pip
         pip install selenium==4.15.0 beautifulsoup4==4.12.2 requests==2.31.0 pandas==2.1.3 openpyxl==3.1.2 lxml==4.9.3 fake-useragent==1.4.0 supabase==2.7.4
+        echo "Dependencies installed successfully"
         
-    - name: Run scraper with Supabase
+    - name: Verify environment setup
       run: |
-        python scraper_supabase.py --config '${{ github.event.inputs.config }}' --session-id '${{ github.event.inputs.session_id }}'
+        python --version
+        google-chrome --version
+        chromedriver --version
+        echo "SUPABASE_URL is set: $([ -n "$SUPABASE_URL" ] && echo 'YES' || echo 'NO')"
+        echo "SUPABASE_SERVICE_KEY is set: $([ -n "$SUPABASE_SERVICE_KEY" ] && echo 'YES' || echo 'NO')"
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        
+    - name: Run OLX scraper with Supabase integration
+      run: |
+        echo "Starting scraper with session ID: ${{ github.event.inputs.session_id }}"
+        echo "Configuration: ${{ github.event.inputs.config }}"
+        python scraper_dev_backup.py --config '${{ github.event.inputs.config }}' --session-id '${{ github.event.inputs.session_id }}'
       env:
         DISPLAY: :99
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         
+    - name: Upload scraping results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: scraping-results-${{ github.event.inputs.session_id }}
+        path: |
+          olx_results/*.csv
+          olx_results/*.json
+          olx_results/*.log
+        retention-days: 7
+        if-no-files-found: warn
+        
     - name: Upload debug logs
       uses: actions/upload-artifact@v4
+      if: failure()
       with:
-        name: scraping-logs-${{ github.event.inputs.session_id }}
-        path: "*.log"
-        if-no-files-found: warn
+        name: debug-logs-${{ github.event.inputs.session_id }}
+        path: |
+          *.log
+          olx_results/
+        retention-days: 3
+        if-no-files-found: ignore
+        
+    - name: Display scraping summary
+      if: always()
+      run: |
+        echo "=== SCRAPING SUMMARY ==="
+        echo "Session ID: ${{ github.event.inputs.session_id }}"
+        echo "Timestamp: $(date)"
+        if [ -d "olx_results" ]; then
+          echo "Results directory exists"
+          ls -la olx_results/ || echo "No files in results directory"
+        else
+          echo "No results directory found"
+        fi
+        echo "========================="
