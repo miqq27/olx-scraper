@@ -591,12 +591,27 @@ class CarDataExtractor:
                     if src and src.startswith('http'): urls.append(src)
                 if urls: break
             data['image_urls'] = urls
+
+            # Text search fallback for published_date (like fuel_type extraction)
+            if not data.get('published_date') or data.get('published_date') == 'N/A':
+                try:
+                    pt = soup.find(string=re.compile(r'Postat', re.I))
+                    if pt:
+                        published_text = pt.parent.get_text().strip()
+                        # Extract just the date part after "Postat "
+                        if 'Postat ' in published_text:
+                            date_part = published_text.replace('Postat ', '').strip()
+                            data['published_date'] = date_part
+                except:
+                    pass
+
             # Defaults
             data.setdefault('year', 'N/A')
             data.setdefault('km', 'N/A')
             data.setdefault('fuel_type', 'N/A')
             data.setdefault('gearbox', 'N/A')
             data.setdefault('car_body', 'N/A')
+            data.setdefault('published_date', 'N/A')
             return data
         except Exception as e:
             self.logger.error(f"Extract error {link}: {e}")
