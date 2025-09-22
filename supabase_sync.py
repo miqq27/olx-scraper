@@ -21,8 +21,23 @@ except ImportError:
     print("Install with: pip install supabase==2.7.4")
     raise
 
-# Import CarData from scraper
-from scraper_dev_backup import CarData
+
+@dataclass
+class CarData:
+    title: str
+    price_text: str
+    price_numeric: float
+    year: str
+    km: str
+    link: str
+    image_urls: List[str]
+    fuel_type: str
+    gearbox: str
+    car_body: str
+    brand: str
+    model: str
+    unique_id: str
+    scrape_date: str
 
 class SupabaseSync:
     """Drop-in replacement for GitHubDatabaseSync using Supabase"""
