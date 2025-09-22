@@ -39,6 +39,7 @@ class CarData:
     unique_id: str
     scrape_date: str
     published_date: str
+    session_id: str = ""
 
 class SupabaseSync:
     """Drop-in replacement for GitHubDatabaseSync using Supabase"""
@@ -261,7 +262,8 @@ class SupabaseSync:
                     'model': car.model,
                     'image_urls': car.image_urls if car.image_urls else [],
                     'scraped_at': car.scrape_date,
-                    'published_date': car.published_date
+                    'published_date': car.published_date,
+                    'session_id': car.session_id
                 }
 
                 # Check if this is a new car (not in existing_cars)
@@ -354,7 +356,8 @@ class SupabaseSync:
                             model='N/A',
                             unique_id=car_id,
                             scrape_date=latest.get('date', datetime.now().isoformat()),
-                            published_date='N/A'
+                            published_date='N/A',
+                            session_id=''
                         )
                         cars_to_save.append(car)
 
