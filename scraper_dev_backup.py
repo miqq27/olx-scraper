@@ -592,16 +592,43 @@ class CarDataExtractor:
                 if urls: break
             data['image_urls'] = urls
 
-            # Text search fallback for published_date (like fuel_type extraction)
+            # Published date extraction - prioritize absolute dates over relative dates
             if not data.get('published_date') or data.get('published_date') == 'N/A':
+                published_date = None
+
                 try:
-                    pt = soup.find(string=re.compile(r'Postat', re.I))
-                    if pt:
-                        published_text = pt.parent.get_text().strip()
-                        # Extract just the date part after "Postat "
-                        if 'Postat ' in published_text:
-                            date_part = published_text.replace('Postat ', '').strip()
-                            data['published_date'] = date_part
+                    # PRIORITY 1: Search for absolute dates with Romanian month names
+                    romanian_months = ["ianuarie", "februarie", "martie", "aprilie", "mai", "iunie",
+                                     "iulie", "august", "septembrie", "octombrie", "noiembrie", "decembrie"]
+
+                    for month in romanian_months:
+                        # Find elements containing month names
+                        month_element = soup.find(string=re.compile(month, re.I))
+                        if month_element:
+                            # Check if parent or nearby elements contain "Postat"
+                            parent_text = month_element.parent.get_text().strip()
+                            if 'Postat' in parent_text:
+                                # Extract the absolute date
+                                if 'Postat ' in parent_text:
+                                    date_part = parent_text.replace('Postat ', '').strip()
+                                    # Exclude relative terms from absolute dates
+                                    if not any(rel_term in date_part.lower() for rel_term in ['azi', 'ieri', 'acum']):
+                                        published_date = date_part
+                                        break
+
+                    # PRIORITY 2: Fallback to relative dates (only if no absolute date found)
+                    if not published_date:
+                        pt = soup.find(string=re.compile(r'Postat', re.I))
+                        if pt:
+                            published_text = pt.parent.get_text().strip()
+                            if 'Postat ' in published_text:
+                                date_part = published_text.replace('Postat ', '').strip()
+                                published_date = date_part
+
+                    # Set the found date
+                    if published_date:
+                        data['published_date'] = published_date
+
                 except:
                     pass
 
