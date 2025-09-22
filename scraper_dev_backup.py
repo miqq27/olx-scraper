@@ -687,10 +687,20 @@ class OLXScrapingEngine:
             self.duplicate_db = {}
     
     def save_duplicate_database(self, new_cars: List[CarData]):
-        """Save cars to Supabase or local file"""
+        """Save ALL cars to database for tracking (Supabase or local file).
+
+        IMPORTANT: This saves ALL scraped cars to maintain complete history,
+        not just the filtered results. The database should only grow, never shrink.
+
+        Args:
+            new_cars: ALL scraped cars (not just filtered results)
+        """
         if not new_cars:
             print("[DATABASE SAVE] No cars to save")
             return
+
+        # Track database size before update
+        initial_db_size = len(self.duplicate_db)
 
         # Try to use Supabase first
         if self.supabase_sync:
@@ -701,14 +711,15 @@ class OLXScrapingEngine:
                     print(f"[DATABASE SAVE] Successfully saved to Supabase")
                     self.logger.info(f"Saved {len(new_cars)} cars to Supabase")
 
-                    # Update local duplicate_db for consistency
+                    # Update local duplicate_db with ALL cars for proper tracking
                     for car in new_cars:
+                        # Always update the duplicate_db with latest data
                         self.duplicate_db[car.unique_id] = {
                             'title': car.title,
                             'link': car.link,
                             'last_price': float(car.price_numeric),
                             'last_seen': car.scrape_date,
-                            'first_seen': car.scrape_date
+                            'first_seen': self.duplicate_db.get(car.unique_id, {}).get('first_seen', car.scrape_date)
                         }
                     return  # Successfully saved to Supabase
                 else:
@@ -813,6 +824,15 @@ class OLXScrapingEngine:
                     'last_seen': latest.get('date', ''),
                     'first_seen': history[0].get('date', '') if history else latest.get('date', '')
                 }
+
+        # CRITICAL: Safety check - database should never shrink
+        final_db_size = len(self.duplicate_db)
+        if final_db_size < initial_db_size:
+            print(f"[DATABASE] CRITICAL WARNING: Database shrunk from {initial_db_size} to {final_db_size}!")
+            print(f"[DATABASE] This should never happen - investigating...")
+            self.logger.error(f"Database shrunk: {initial_db_size} -> {final_db_size}")
+        else:
+            print(f"[DATABASE] Database size OK: {initial_db_size} -> {final_db_size} (+{final_db_size - initial_db_size})")
     
     def has_significant_price_change(self, car_id: str, new_price: float) -> bool:
         """Check if price changed significantly from last known price"""
@@ -846,13 +866,20 @@ class OLXScrapingEngine:
         return True
     
     def filter_duplicates(self, cars_data: List[CarData]) -> List[CarData]:
-        """Filter out duplicate cars from scraped data based on database
-        
+        """Identify NEW cars and cars with PRICE CHANGES for CSV export.
+
+        IMPORTANT: This method returns cars that should appear in results/CSV:
+        - NEW cars (not in database at all)
+        - Cars with PRICE CHANGES ≥1 EUR from last known price
+
+        Cars without significant changes are filtered out from results,
+        but ALL cars should still be saved to database for tracking.
+
         Args:
             cars_data: List of all scraped cars
-            
+
         Returns:
-            List of non-duplicate cars (new cars or price changes >1 EUR)
+            List of actionable cars (new or price changed ≥1 EUR)
         """
         filtered_cars = []
         duplicate_count = 0
@@ -2385,20 +2412,23 @@ def run_headless_scraper():
         
         print(f"[WORKFLOW] Step 2 Complete: Database ready with {len(engine.duplicate_db)} known cars")
         
-        # Step 3: Filter duplicates from complete scraped dataset
-        print("\n[WORKFLOW] Step 3: Filter duplicates from complete scraped dataset...")
-        cars_data = engine.filter_duplicates(all_scraped_cars)
-        
-        print(f"[WORKFLOW] Step 3 Complete: {len(cars_data)} non-duplicate cars (from {len(all_scraped_cars)} total)")
-        print(f"[WORKFLOW]   - New cars found: {len(cars_data)}")
-        print(f"[WORKFLOW]   - Duplicates filtered: {len(all_scraped_cars) - len(cars_data)}")
-        
-        # Step 4: Update database with ALL scraped cars (including duplicates for price tracking)
-        print("\n[WORKFLOW] Step 4: Update database with scraped data...")
+        # Step 3: Filter to find NEW cars and PRICE CHANGES (≥1 EUR)
+        print("\n[WORKFLOW] Step 3: Identify new cars and price changes...")
+        cars_data = engine.filter_duplicates(all_scraped_cars)  # Returns NEW + PRICE CHANGED cars only
+
+        print(f"[WORKFLOW] Step 3 Complete: {len(cars_data)} actionable cars found")
+        print(f"[WORKFLOW]   - From: {len(all_scraped_cars)} total scraped cars")
+        print(f"[WORKFLOW]   - Kept: {len(cars_data)} cars (new or price changed ≥1 EUR)")
+        print(f"[WORKFLOW]   - Filtered: {len(all_scraped_cars) - len(cars_data)} unchanged duplicates")
+
+        # Step 4: Save ALL scraped cars to database (for complete tracking)
+        print("\n[WORKFLOW] Step 4: Update database with ALL scraped data...")
+        print("[WORKFLOW] NOTE: Saving all cars for tracking, not just new/changed ones")
         before_size = len(engine.duplicate_db)
-        engine.save_duplicate_database(all_scraped_cars)
+        engine.save_duplicate_database(all_scraped_cars)  # Save ALL cars to database
         after_size = len(engine.duplicate_db)
-        print(f"[WORKFLOW] Step 4 Complete: Database updated from {before_size} to {after_size} cars (+{after_size - before_size})")
+        print(f"[WORKFLOW] Step 4 Complete: Database updated from {before_size} to {after_size} cars")
+        print(f"[WORKFLOW]   - Database growth: +{after_size - before_size} cars")
         
         # Save results with session ID
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
