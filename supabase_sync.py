@@ -224,79 +224,86 @@ class SupabaseSync:
             return False
 
     def _save_batch(self, batch: List[CarData]) -> bool:
-        """Save a batch of cars with retry logic"""
-        for attempt in range(self.MAX_RETRIES):
-            try:
-                # Prepare cars data for upsert
-                cars_data = []
-                price_updates = []
+        """Save a batch of cars using upsert to prevent constraint violations"""
+        try:
+            # First, get existing prices for price change detection
+            car_ids = [car.unique_id for car in batch]
+            existing_cars = {}
 
-                for car in batch:
-                    # Check if car exists
-                    existing = self.supabase.table('cars')\
-                        .select('unique_id, price')\
-                        .eq('unique_id', car.unique_id)\
-                        .execute()
+            # Get existing cars in one query (much more efficient)
+            if car_ids:
+                existing_response = self.supabase.table('cars')\
+                    .select('unique_id, price')\
+                    .in_('unique_id', car_ids)\
+                    .execute()
 
-                    car_dict = {
-                        'unique_id': car.unique_id,
-                        'title': car.title,
-                        'price': float(car.price_numeric) if car.price_numeric else None,
-                        'price_text': car.price_text,
-                        'year': car.year,
-                        'km': car.km,
-                        'link': car.link,
-                        'fuel_type': car.fuel_type,
-                        'gearbox': car.gearbox,
-                        'car_body': car.car_body,
-                        'brand': car.brand,
-                        'model': car.model,
-                        'image_urls': car.image_urls if car.image_urls else [],
-                        'scraped_at': car.scrape_date
-                    }
+                for existing_car in existing_response.data:
+                    existing_cars[existing_car['unique_id']] = existing_car.get('price')
 
-                    if existing.data:
-                        # Car exists - check for price change
-                        old_price = existing.data[0].get('price')
-                        new_price = float(car.price_numeric) if car.price_numeric else None
+            # Prepare all cars for upsert and track price changes
+            cars_to_upsert = []
+            price_updates = []
 
-                        if old_price and new_price and abs(old_price - new_price) >= 1:
-                            # Price changed - add to price history
-                            price_updates.append({
-                                'car_unique_id': car.unique_id,
-                                'price': new_price,
-                                'price_text': car.price_text,
-                                'recorded_at': car.scrape_date
-                            })
+            for car in batch:
+                car_dict = {
+                    'unique_id': car.unique_id,
+                    'title': car.title,
+                    'price': float(car.price_numeric) if car.price_numeric else None,
+                    'price_text': car.price_text,
+                    'year': car.year,
+                    'km': car.km,
+                    'link': car.link,
+                    'fuel_type': car.fuel_type,
+                    'gearbox': car.gearbox,
+                    'car_body': car.car_body,
+                    'brand': car.brand,
+                    'model': car.model,
+                    'image_urls': car.image_urls if car.image_urls else [],
+                    'scraped_at': car.scrape_date
+                }
 
-                            # Update car record
-                            self.supabase.table('cars')\
-                                .update(car_dict)\
-                                .eq('unique_id', car.unique_id)\
-                                .execute()
-                    else:
-                        # New car - set first_seen
-                        car_dict['first_seen'] = car.scrape_date
-                        cars_data.append(car_dict)
-
-                # Bulk insert new cars
-                if cars_data:
-                    self.supabase.table('cars').insert(cars_data).execute()
-                    self.logger.info(f"Inserted {len(cars_data)} new cars")
-
-                # Bulk insert price updates
-                if price_updates:
-                    self.supabase.table('price_history').insert(price_updates).execute()
-                    self.logger.info(f"Added {len(price_updates)} price history entries")
-
-                return True
-
-            except Exception as e:
-                self.logger.error(f"Batch save attempt {attempt + 1} failed: {e}")
-                if attempt < self.MAX_RETRIES - 1:
-                    time.sleep(self.RETRY_DELAY * (attempt + 1))
+                # Check if this is a new car (not in existing_cars)
+                if car.unique_id not in existing_cars:
+                    # New car - set first_seen
+                    car_dict['first_seen'] = car.scrape_date
                 else:
-                    return False
+                    # Existing car - check for price change
+                    old_price = existing_cars[car.unique_id]
+                    new_price = float(car.price_numeric) if car.price_numeric else None
+
+                    if old_price and new_price and abs(old_price - new_price) >= 1:
+                        # Price changed by more than 1 EUR - track it
+                        price_updates.append({
+                            'car_unique_id': car.unique_id,
+                            'price': new_price,
+                            'price_text': car.price_text,
+                            'recorded_at': car.scrape_date
+                        })
+                        self.logger.info(f"Price change detected for {car.unique_id}: {old_price} -> {new_price}")
+
+                cars_to_upsert.append(car_dict)
+
+            # Use UPSERT for all cars - this handles both new and existing cars
+            # No constraint violations possible with upsert!
+            if cars_to_upsert:
+                response = self.supabase.table('cars')\
+                    .upsert(cars_to_upsert, on_conflict='unique_id')\
+                    .execute()
+                self.logger.info(f"Upserted {len(cars_to_upsert)} cars successfully")
+
+            # Insert price history records for cars with price changes
+            if price_updates:
+                self.supabase.table('price_history').insert(price_updates).execute()
+                self.logger.info(f"Added {len(price_updates)} price history entries")
+
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to save batch: {e}")
+            # Log more details for debugging
+            if "duplicate key" in str(e).lower():
+                self.logger.error("Duplicate key error - this shouldn't happen with upsert!")
+            return False
 
     def upload_database(self, local_path: str = None, session_id: str = None) -> bool:
         """
