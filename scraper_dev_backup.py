@@ -707,6 +707,53 @@ class OLXScrapingEngine:
             try:
                 print(f"\n[DATABASE SAVE] Saving {len(new_cars)} cars to Supabase")
                 print(f"[DATABASE SAVE] Current in-memory database: {len(self.duplicate_db)} cars")
+
+                # Debug: Check for duplicate unique_ids in the batch
+                unique_ids = [car.unique_id for car in new_cars]
+                unique_set = set(unique_ids)
+
+                print(f"[DEBUG] Total cars to save: {len(new_cars)}")
+                print(f"[DEBUG] Unique IDs count: {len(unique_set)}")
+                print(f"[DEBUG] Duplicates detected: {len(unique_ids) - len(unique_set)}")
+
+                if len(unique_ids) != len(unique_set):
+                    # Find and log duplicates
+                    from collections import Counter
+                    counts = Counter(unique_ids)
+                    duplicates = {uid: count for uid, count in counts.items() if count > 1}
+                    print(f"[DEBUG] Duplicate unique_ids: {duplicates}")
+
+                    # Show first few duplicate cars for analysis
+                    for uid, count in list(duplicates.items())[:3]:
+                        print(f"[DEBUG] Cars with ID {uid}:")
+                        for i, car in enumerate(new_cars):
+                            if car.unique_id == uid:
+                                print(f"  [{i}] {car.title[:50]}... | {car.link[:60]}...")
+
+                # Fix: Remove duplicate unique_ids before saving to Supabase
+                if len(unique_ids) != len(unique_set):
+                    print(f"[FIX] Removing {len(unique_ids) - len(unique_set)} duplicate cars before saving")
+
+                    # Keep only the LAST occurrence of each unique_id (most recent scrape data)
+                    seen_ids = set()
+                    deduplicated_cars = []
+
+                    # Process in reverse to keep last occurrence
+                    for car in reversed(new_cars):
+                        if car.unique_id not in seen_ids:
+                            seen_ids.add(car.unique_id)
+                            deduplicated_cars.append(car)
+
+                    # Reverse back to original order
+                    new_cars = list(reversed(deduplicated_cars))
+
+                    print(f"[FIX] After deduplication: {len(new_cars)} cars to save")
+
+                    # Update the debug info
+                    unique_ids = [car.unique_id for car in new_cars]
+                    unique_set = set(unique_ids)
+                    print(f"[FIX] Verification - Unique IDs now: {len(unique_set)}, Duplicates: {len(unique_ids) - len(unique_set)}")
+
                 success = self.supabase_sync.save_cars_data(new_cars)
                 if success:
                     print(f"[DATABASE SAVE] Successfully saved to Supabase")
