@@ -208,7 +208,6 @@ SAVED_SEARCHES_FILE = os.path.join(RESULTS_DIR, "saved_searches.json")
 
 
 # ---------- Marci + Modele (INTEGRATE) ----------
-# [WARNING] Daca vrei lista ta completa exact cum ai pus-o, inlocuieste continutul de mai jos.
 CAR_BRANDS_MODELS: Dict[str, List[str]] = {
     "Abarth": ["124", "124 Spider", "500", "595", "695", "Grande Punto", "Inny", "Altul"],
     "Acura": ["Toate modelele"],
