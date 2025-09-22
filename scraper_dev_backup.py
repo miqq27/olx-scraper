@@ -26,6 +26,7 @@ import base64
 import argparse
 import tempfile
 import shutil
+import uuid
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Set, Tuple
 from datetime import datetime, timedelta
@@ -448,140 +449,7 @@ class GitHubUploader:
             print(f"[TRACEBACK] {traceback.format_exc()}")
             return None
 
-# ---------- GitHub Database Sync Functions ----------
-class GitHubDatabaseSync:
-    """Handles syncing price_history.json with GitHub repository"""
-
-    def __init__(self, username: str, repo: str, token: str):
-        self.username = username
-        self.repo = repo
-        self.token = token
-        self.base_url = f"https://api.github.com/repos/{username}/{repo}"
-        self.logger = logging.getLogger("GitHubDatabaseSync")
-
-        # Simple database operations
-    
-    def download_database(self, local_path: str = None) -> bool:
-        """Simple download with basic retry logic"""
-        if local_path is None:
-            local_path = os.path.join(RESULTS_DIR, 'price_history.json')
-        
-        for attempt in range(3):  # Simple 3 retries
-            try:
-                print(f"[DB SYNC] Downloading database (attempt {attempt + 1}/3)")
-                
-                db_path = getattr(self, 'database_path', 'data/price_history.json')
-                url = f"{self.base_url}/contents/{db_path}"
-                headers = {'Authorization': f'token {self.token}'}
-                
-                response = requests.get(url, headers=headers, timeout=30)
-                
-                if response.status_code == 404:
-                    # File doesn't exist yet - create empty database
-                    print("[DB SYNC] No database found on GitHub, creating empty database")
-                    empty_db = {'history': {}, 'metadata': {'created_at': datetime.now().isoformat()}}
-                    with open(local_path, 'w', encoding='utf-8') as f:
-                        json.dump(empty_db, f, ensure_ascii=False, indent=2)
-                    return True
-                
-                if response.status_code == 200:
-                    file_content = response.json().get('content', '')
-                    if file_content:
-                        import base64
-                        decoded_content = base64.b64decode(file_content).decode('utf-8')
-                        database = json.loads(decoded_content)
-                        
-                        # Basic sanity check - must be a dict with history key
-                        if isinstance(database, dict) and 'history' in database:
-                            with open(local_path, 'w', encoding='utf-8') as f:
-                                json.dump(database, f, ensure_ascii=False, indent=2)
-                            print(f"[DB SYNC] Downloaded database with {len(database.get('history', {}))} entries")
-                            return True
-                        else:
-                            print("[DB SYNC] Downloaded data is malformed, retrying...")
-                            continue
-                            
-                print(f"[DB SYNC] Attempt {attempt + 1} failed (status: {response.status_code})")
-                
-            except Exception as e:
-                print(f"[DB SYNC] Attempt {attempt + 1} error: {e}")
-                
-            if attempt < 2:  # Don't sleep after last attempt
-                time.sleep(2)  # Simple 2 second delay
-        
-        # All retries failed - create empty database as fallback
-        print("[DB SYNC] All downloads failed, creating empty database")
-        empty_db = {'history': {}, 'metadata': {'created_at': datetime.now().isoformat()}}
-        with open(local_path, 'w', encoding='utf-8') as f:
-            json.dump(empty_db, f, ensure_ascii=False, indent=2)
-        return True  # Always succeed - empty database is better than crash
-
-    def upload_database(self, local_path: str = None, session_id: str = None) -> bool:
-        """Simple upload with basic retry logic"""
-        if local_path is None:
-            local_path = os.path.join(RESULTS_DIR, 'price_history.json')
-            
-        if not os.path.exists(local_path):
-            print("[DB SYNC] No local database file to upload")
-            return False
-        
-        for attempt in range(3):  # Simple 3 retries
-            try:
-                print(f"[DB SYNC] Uploading database (attempt {attempt + 1}/3)")
-                
-                # Read local file
-                with open(local_path, 'r', encoding='utf-8') as f:
-                    database = json.load(f)
-                
-                # Basic sanity check
-                if not isinstance(database, dict):
-                    print(f"[DB SYNC] Invalid database format: {type(database)}")
-                    return False
-                
-                import base64
-                file_content = json.dumps(database, ensure_ascii=False, indent=2)
-                encoded_content = base64.b64encode(file_content.encode('utf-8')).decode('utf-8')
-                
-                db_path = getattr(self, 'database_path', 'data/price_history.json')
-                url = f"{self.base_url}/contents/{db_path}"
-                headers = {'Authorization': f'token {self.token}'}
-                
-                # Check if file exists to get SHA
-                sha = None
-                get_response = requests.get(url, headers=headers, timeout=30)
-                if get_response.status_code == 200:
-                    sha = get_response.json().get('sha')
-                
-                # Upload data
-                commit_message = f"Update price history database"
-                if session_id:
-                    commit_message += f" (session: {session_id})"
-                
-                payload = {
-                    'message': commit_message,
-                    'content': encoded_content
-                }
-                if sha:
-                    payload['sha'] = sha
-                
-                response = requests.put(url, headers=headers, json=payload, timeout=60)
-                
-                if response.status_code in [200, 201]:
-                    print(f"[DB SYNC] Database uploaded successfully ({len(database.get('history', {}))} entries)")
-                    return True
-                else:
-                    print(f"[DB SYNC] Upload attempt {attempt + 1} failed (status: {response.status_code})")
-                    
-            except Exception as e:
-                print(f"[DB SYNC] Upload attempt {attempt + 1} error: {e}")
-                
-            if attempt < 2:  # Don't sleep after last attempt
-                time.sleep(2)  # Simple 2 second delay
-        
-        print("[DB SYNC] All upload attempts failed")
-        return False
-
-    # ---------- Modele de date ----------
+# ---------- Modele de date ----------
 @dataclass
 class SearchConfig:
     brands: List[str]
@@ -741,13 +609,46 @@ class OLXScrapingEngine:
         # DON'T load database here - it will be loaded later in the workflow
         self.should_stop = lambda: False
         self.headless = False  # GitHub Actions headless mode support
+
+        # Initialize Supabase sync if available
+        try:
+            from supabase_sync import SupabaseSync
+            self.supabase_sync = SupabaseSync()
+            self.logger.info("Supabase sync initialized")
+        except Exception as e:
+            self.supabase_sync = None
+            self.logger.warning(f"Supabase not available, using local storage: {e}")
         
     def load_duplicate_database(self, database_content: dict = None):
-        """Load price history database and convert to duplicate_db format"""
+        """Load duplicate database from Supabase or local file"""
         db_file = os.path.join(RESULTS_DIR, 'price_history.json')
 
         try:
-            # Use provided content or load from file
+            # Try to load from Supabase first
+            if self.supabase_sync:
+                try:
+                    self.duplicate_db = self.supabase_sync.load_duplicate_database()
+                    cars_count = len(self.duplicate_db)
+                    print(f"[DATABASE] Loaded {cars_count} cars from Supabase")
+
+                    if cars_count < 100 and cars_count > 0:
+                        print(f"[DATABASE] WARNING: Database suspiciously small ({cars_count} cars)")
+                        print(f"[DATABASE] This might indicate corruption - manual review recommended")
+
+                    self.logger.info(f"Loaded {cars_count} known cars from Supabase")
+
+                    # Sample logging
+                    if cars_count > 0:
+                        sample_ids = list(self.duplicate_db.keys())[:5]
+                        print(f"[DATABASE] Sample IDs: {sample_ids}")
+
+                    return  # Successfully loaded from Supabase
+
+                except Exception as e:
+                    print(f"[DATABASE] Supabase load failed, using local fallback: {e}")
+                    self.logger.warning(f"Supabase load failed: {e}")
+
+            # Fallback to local file
             if database_content:
                 data = database_content
                 print("[DATABASE] Using provided database content")
@@ -760,7 +661,7 @@ class OLXScrapingEngine:
                     print("[DATABASE] No existing database file found, starting fresh")
                     data = {'history': {}, 'metadata': {}}
 
-            # Convert price_history format to duplicate_db format for compatibility
+            # Convert price_history format to duplicate_db format
             self.duplicate_db = {}
             history_data = data.get('history', {})
 
@@ -775,46 +676,49 @@ class OLXScrapingEngine:
                         'first_seen': history[0].get('date', '') if history else latest_entry.get('date', '')
                     }
 
-            # MOVE ALL LOGGING OUTSIDE THE LOOP - EXECUTE ONLY ONCE
             cars_count = len(self.duplicate_db)
-            if cars_count < 100 and cars_count > 0:
-                print(f"[DATABASE] WARNING: Database suspiciously small ({cars_count} cars)")
-                print(f"[DATABASE] This might indicate corruption - manual review recommended")
+            print(f"[DATABASE] Loaded {cars_count} cars from local file")
+            self.logger.info(f"Loaded {cars_count} known cars from local file")
 
-            print(f"[DATABASE] Loaded {cars_count} cars from price history")
-            print(f"[DATABASE] Price history contains {len(history_data)} car records")
-            self.logger.info(f"Loaded {cars_count} known cars from price history")
-
-            # Enhanced logging for debugging - ONLY ONCE
-            if cars_count > 0:
-                sample_ids = list(self.duplicate_db.keys())[:5]
-                print(f"[DATABASE] Sample IDs: {sample_ids}")
-
-                # Sample the first 5 IDs with better error handling
-                sample_count = min(5, len(sample_ids))
-                if sample_count > 0:
-                    print(f"[DATABASE] Sample of {sample_count} cars from history:")
-                    for i in range(sample_count):
-                        try:
-                            car_id = sample_ids[i]
-                            car_data = self.duplicate_db[car_id]
-                            history_entries = len(history_data.get(car_id, []))
-                            print(f"  - {car_id}: {car_data.get('title', 'N/A')[:40]}... ({history_entries} entries)")
-                        except Exception as sample_e:
-                            print(f"  - Error displaying sample {i}: {sample_e}")
-                        
-            else:
-                print(f"[DATABASE] No price history file found at: {db_file}")
-                self.duplicate_db = {}
-                
         except Exception as e:
-            print(f"[DATABASE] Error loading price history: {e}")
+            print(f"[DATABASE] Error loading database: {e}")
             print(f"[DATABASE] Starting with empty database")
-            self.logger.error(f"Price history load fail: {e}")
+            self.logger.error(f"Database load fail: {e}")
             self.duplicate_db = {}
     
     def save_duplicate_database(self, new_cars: List[CarData]):
-        """Save to price_history.json format preserving all historical data"""
+        """Save cars to Supabase or local file"""
+        if not new_cars:
+            print("[DATABASE SAVE] No cars to save")
+            return
+
+        # Try to use Supabase first
+        if self.supabase_sync:
+            try:
+                print(f"\n[DATABASE SAVE] Saving {len(new_cars)} cars to Supabase")
+                success = self.supabase_sync.save_cars_data(new_cars)
+                if success:
+                    print(f"[DATABASE SAVE] Successfully saved to Supabase")
+                    self.logger.info(f"Saved {len(new_cars)} cars to Supabase")
+
+                    # Update local duplicate_db for consistency
+                    for car in new_cars:
+                        self.duplicate_db[car.unique_id] = {
+                            'title': car.title,
+                            'link': car.link,
+                            'last_price': float(car.price_numeric),
+                            'last_seen': car.scrape_date,
+                            'first_seen': car.scrape_date
+                        }
+                    return  # Successfully saved to Supabase
+                else:
+                    print(f"[DATABASE SAVE] Supabase save failed, using local fallback")
+            except Exception as e:
+                print(f"[DATABASE SAVE] Supabase error, using local fallback: {e}")
+                self.logger.warning(f"Supabase save failed: {e}")
+
+        # Fallback to local file storage
+        print("[DATABASE SAVE] Using local file storage")
         db_file = os.path.join(RESULTS_DIR, 'price_history.json')
         
         # Load existing history
@@ -1355,6 +1259,19 @@ class OLXScrapingEngine:
     def scrape_all_cars(self, config: SearchConfig, progress_callback=None) -> List[CarData]:
         if not self.setup_driver():
             return []
+
+        # Create lock file with session info
+        session_id = str(uuid.uuid4())
+        lock_file = os.path.join(RESULTS_DIR, '.scraping_lock')
+        timestamp = datetime.now().isoformat()
+
+        try:
+            with open(lock_file, 'w') as f:
+                f.write(f"{session_id}\n{timestamp}")
+            self.logger.info(f"Created scraping lock file with session: {session_id}")
+        except Exception as e:
+            self.logger.warning(f"Could not create lock file: {e}")
+
         self.logger.info(f"Start scraping: {len(config.brands)} brands")
         try:
             all_basic = []
@@ -1379,6 +1296,13 @@ class OLXScrapingEngine:
             return []
         finally:
             self.cleanup_driver()
+            # Remove lock file
+            try:
+                if os.path.exists(lock_file):
+                    os.remove(lock_file)
+                    self.logger.info("Removed scraping lock file")
+            except Exception as e:
+                self.logger.warning(f"Could not remove lock file: {e}")
     
     def cleanup_driver(self):
         if self.driver:
@@ -1423,6 +1347,10 @@ class OLXAdvancedScraper(QWidget):
         self.setup_default_values()
         self.load_saved_searches()
         self.refresh_saved_search_dropdown()
+        self.check_running_scraper_on_startup()
+        self.status_timer = QTimer()
+        self.status_timer.timeout.connect(self.check_scraper_status)
+        self.status_timer.start(5000)
     
     # ===== UI =====
     def setup_ui(self):
@@ -2250,7 +2178,64 @@ class OLXAdvancedScraper(QWidget):
                 QMessageBox.information(self, "Export Finalizat", message)
             except Exception as e:
                 QMessageBox.critical(self, "Eroare Export", f"Exportul a eșuat:\n{e}")
-        
+
+    def check_running_scraper_on_startup(self):
+        """Check at startup if another scraper is running"""
+        lock_file = os.path.join(RESULTS_DIR, '.scraping_lock')
+        if os.path.exists(lock_file):
+            try:
+                with open(lock_file, 'r') as f:
+                    content = f.read().strip().split('\n')
+                    session_id = content[0] if content else "unknown"
+                    timestamp = content[1] if len(content) > 1 else ""
+
+                # Check if recent (last 2 hours)
+                if timestamp:
+                    lock_time = datetime.fromisoformat(timestamp)
+                    age = (datetime.now() - lock_time).total_seconds()
+                    if age < 7200:  # 2 hours
+                        self.show_running_scraper_status(session_id, timestamp)
+                        return
+
+                # Old lock, remove it
+                os.remove(lock_file)
+            except:
+                pass
+
+    def show_running_scraper_status(self, session_id, timestamp):
+        """Display that a scraper is running"""
+        self.start_btn.setEnabled(False)
+        self.start_btn.setText("Scraper active in another session")
+
+        self.progress_label.setText(f"Another scraper is running (Session: {session_id[:15]}...)")
+        self.progress_label.setStyleSheet("color: #FF9800; font-weight: bold;")
+
+        from PyQt5.QtWidgets import QMessageBox
+        QMessageBox.information(self, "Active Scraper Detected",
+            f"A scraper is already active from another session.\n"
+            f"Session ID: {session_id}\n"
+            f"Started at: {timestamp}\n\n"
+            f"You can start a new scraper when the current one finishes.")
+
+    def check_scraper_status(self):
+        """Check scraper status periodically"""
+        lock_file = os.path.join(RESULTS_DIR, '.scraping_lock')
+
+        if os.path.exists(lock_file):
+            # Scraper active
+            if self.start_btn.isEnabled() and not self.scraping_thread:
+                self.start_btn.setEnabled(False)
+                self.start_btn.setText("Scraper active in another session")
+                self.progress_label.setText("Another scraper is running...")
+                self.progress_label.setStyleSheet("color: #FF9800;")
+        else:
+            # No scraper running
+            if not self.start_btn.isEnabled() and not self.scraping_thread:
+                self.start_btn.setEnabled(True)
+                self.start_btn.setText("Start Scraping")
+                self.progress_label.setText("Ready to start scraping...")
+                self.progress_label.setStyleSheet("color: #ffffff;")
+
     def get_modern_stylesheet(self):
             return """
             QWidget { background-color: #1e1e1e; color: #ffffff; font-family: 'Segoe UI', Arial, sans-serif; font-size: 11px; }
@@ -2383,77 +2368,20 @@ def run_headless_scraper():
         print(f"[WORKFLOW] Step 1 Complete: Scraped {len(all_scraped_cars)} total cars")
         logger.info(f"Scraping completed: {len(all_scraped_cars)} total cars collected")
         
-        # Step 2: Download database from GitHub for duplicate detection
-        print("\n[WORKFLOW] Step 2: Download database from GitHub for duplicate detection...")
-        
-        github_config_path = None
-        github_db_sync = None
-        
-        # Extract database path from configuration
-        data_repo_config = json_config.get('data_repo', {})
-        database_path = data_repo_config.get('database_path', 'data/price_history.json')
-        print(f"[CONFIG] Using database path: {database_path}")
-        
-        # Find GitHub config
-        config_files = ["github-config.json", "github_config.json", 
-                       os.path.join(args.output_dir, "github-config.json")]
-        
-        for path in config_files:
-            if os.path.exists(path):
-                github_config_path = path
-                break
-        
-        if github_config_path:
-            try:
-                print("[DB SYNC] Loading GitHub configuration...")
-                with open(github_config_path, 'r', encoding='utf-8') as f:
-                    github_config = json.load(f)
-                
-                print(f"[CONFIG] Username: {github_config.get('username', 'MISSING')}")
-                print(f"[CONFIG] Data repo: olx-csv-data")
-                
-                # Initialize database sync
-                github_db_sync = GitHubDatabaseSync(
-                    username=github_config['username'],
-                    repo='olx-csv-data',  # Data repository
-                    token=github_config['token']
-                )
-                
-                # Set the correct database path from configuration
-                github_db_sync.database_path = database_path
+        # Step 2: Load database from Supabase for duplicate detection
+        print("\n[WORKFLOW] Step 2: Load database for duplicate detection...")
 
-                
-                # Download database with simple operations
-                if github_db_sync.download_database():
-                    engine.load_duplicate_database()
+        # Load database (will use Supabase if available, otherwise local file)
+        engine.load_duplicate_database()
 
-                    # Simple safeguard: warn about suspiciously small database
-                    db_size = len(engine.duplicate_db)
-                    print(f"[DATABASE] Successfully loaded {db_size} cars")
+        db_size = len(engine.duplicate_db)
+        print(f"[DATABASE] Successfully loaded {db_size} cars")
 
-                    if 0 < db_size < 50:
-                        print(f"[WARNING] Suspiciously small database ({db_size} cars)")
-                        print("[WARNING] This might be corrupted - manual review recommended")
-                    elif db_size == 0:
-                        print("[INFO] Empty database - starting fresh scraping session")
-                else:
-                    print(f"[DATABASE] Download failed, starting fresh")
-                    engine.load_duplicate_database()  # Will create empty DB
-                    
-            except Exception as e:
-                print(f"[DB SYNC] CRITICAL ERROR: {e}")
-
-        # SAFETY CHECK: Abort if database is too small
-        # if github_config_path and len(engine.duplicate_db) < 100:
-        #    print(f"[SAFETY] ABORTING: Database too small ({len(engine.duplicate_db)} cars)")
-         #   print(f"[SAFETY] This indicates potential data corruption - manual intervention required")
-          #  return False
-
-        if not github_config_path:
-            print("[DB SYNC] WARNING: Using local database fallback")
-            engine.load_duplicate_database()
-            if len(engine.duplicate_db) == 0:
-                print("[DB SYNC] No local database available - this is a first run")
+        if 0 < db_size < 50:
+            print(f"[WARNING] Suspiciously small database ({db_size} cars)")
+            print("[WARNING] This might be corrupted - manual review recommended")
+        elif db_size == 0:
+            print("[INFO] Empty database - starting fresh scraping session")
         
         print(f"[WORKFLOW] Step 2 Complete: Database ready with {len(engine.duplicate_db)} known cars")
         
@@ -2506,22 +2434,23 @@ def run_headless_scraper():
         csv_file = os.path.join(args.output_dir, f'olx_results_{args.session_id}_{timestamp}.csv')
         df.to_csv(csv_file, index=False, encoding='utf-8')
         
-        # Step 5: Upload database to GitHub BEFORE uploading CSV
-        print("\n[WORKFLOW] Step 5: Upload updated database to GitHub...")
-        if github_db_sync:
-            try:
-                if github_db_sync.upload_database(session_id=args.session_id):
-                    print("[WORKFLOW] Step 5 Complete: Database uploaded to GitHub")
-                else:
-                    print("[WORKFLOW] Step 5 Failed: Database upload failed - duplicate detection may not work next run")
-            except Exception as e:
-                print(f"[WORKFLOW] Step 5 Error: {e}")
-                logger.error(f"Database upload error: {e}")
-        else:
-            print("[WORKFLOW] Step 5 Skipped: No GitHub sync configured")
+        # Step 5: Database is automatically saved in Step 4
+        print("\n[WORKFLOW] Step 5: Database sync completed")
+        print("[WORKFLOW] Step 5 Complete: Database saved (Supabase or local)")
         
-        # Step 6: Upload filtered CSV to GitHub
-        print(f"\n[WORKFLOW] Step 6: Upload filtered CSV to GitHub ({len(cars_data)} non-duplicate cars)...")
+        # Step 6: Optional - Upload filtered CSV to GitHub for reporting
+        print(f"\n[WORKFLOW] Step 6: Optional CSV upload to GitHub ({len(cars_data)} non-duplicate cars)...")
+
+        # Try to find GitHub config for CSV uploads (optional)
+        github_config_path = None
+        config_files = ["github-config.json", "github_config.json",
+                       os.path.join(args.output_dir, "github-config.json")]
+
+        for path in config_files:
+            if os.path.exists(path):
+                github_config_path = path
+                break
+
         if github_config_path:
             try:
                 with open(github_config_path, 'r', encoding='utf-8') as f:
@@ -2637,6 +2566,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
 
