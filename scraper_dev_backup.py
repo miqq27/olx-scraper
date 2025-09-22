@@ -706,12 +706,14 @@ class OLXScrapingEngine:
         if self.supabase_sync:
             try:
                 print(f"\n[DATABASE SAVE] Saving {len(new_cars)} cars to Supabase")
+                print(f"[DATABASE SAVE] Current in-memory database: {len(self.duplicate_db)} cars")
                 success = self.supabase_sync.save_cars_data(new_cars)
                 if success:
                     print(f"[DATABASE SAVE] Successfully saved to Supabase")
                     self.logger.info(f"Saved {len(new_cars)} cars to Supabase")
 
                     # Update local duplicate_db with ALL cars for proper tracking
+                    # IMPORTANT: This only ADDS/UPDATES, never removes existing entries
                     for car in new_cars:
                         # Always update the duplicate_db with latest data
                         self.duplicate_db[car.unique_id] = {
@@ -721,6 +723,14 @@ class OLXScrapingEngine:
                             'last_seen': car.scrape_date,
                             'first_seen': self.duplicate_db.get(car.unique_id, {}).get('first_seen', car.scrape_date)
                         }
+
+                    # Verify database grew
+                    final_size = len(self.duplicate_db)
+                    if final_size < initial_db_size:
+                        print(f"[DATABASE] WARNING: Database shrunk after Supabase save: {initial_db_size} -> {final_size}")
+                    else:
+                        print(f"[DATABASE] Database size after save: {final_size} (+{final_size - initial_db_size})")
+
                     return  # Successfully saved to Supabase
                 else:
                     print(f"[DATABASE SAVE] Supabase save failed, using local fallback")
@@ -731,24 +741,44 @@ class OLXScrapingEngine:
         # Fallback to local file storage
         print("[DATABASE SAVE] Using local file storage")
         db_file = os.path.join(RESULTS_DIR, 'price_history.json')
-        
-        # Load existing history
+
+        # CRITICAL: Start with existing duplicate_db data to preserve ALL loaded cars
+        # Convert current duplicate_db to history format first
         existing_history = {}
+        for car_id, car_data in self.duplicate_db.items():
+            existing_history[car_id] = [{
+                'date': car_data.get('last_seen', datetime.now().isoformat()),
+                'price': car_data.get('last_price', 0),
+                'price_text': '',
+                'title': car_data.get('title', ''),
+                'link': car_data.get('link', ''),
+                'source': 'existing_db'
+            }]
+
+        # Now merge with what's in the file (if it exists)
         if os.path.exists(db_file):
             try:
                 with open(db_file, 'r', encoding='utf-8') as f:
                     existing_data = json.load(f)
-                    existing_history = existing_data.get('history', {})
+                    file_history = existing_data.get('history', {})
+
+                    # Merge file history into existing_history
+                    for car_id, history in file_history.items():
+                        if car_id in existing_history:
+                            # Merge histories, avoiding duplicates
+                            existing_history[car_id].extend(history)
+                        else:
+                            existing_history[car_id] = history
             except Exception as e:
-                print(f"[DATABASE] Error loading existing history: {e}")
-                existing_history = {}
-        
+                print(f"[DATABASE] Error loading file history: {e}")
+
         original_size = len(existing_history)
         new_entries = 0
         updated_entries = 0
-        
+
         print(f"\n[DATABASE MERGE] Starting price history merge")
-        print(f"[DATABASE MERGE] Existing history size: {original_size} cars")
+        print(f"[DATABASE MERGE] In-memory database: {len(self.duplicate_db)} cars")
+        print(f"[DATABASE MERGE] Combined history size: {original_size} cars")
         print(f"[DATABASE MERGE] New cars to process: {len(new_cars)} cars")
         
         # Update history with new cars
@@ -811,12 +841,13 @@ class OLXScrapingEngine:
         
         print(f"[DATABASE MERGE] Price history saved successfully")
         self.logger.info(f"Price history merge complete: {original_size} -> {final_size} cars ({new_entries} new, {updated_entries} updated)")
-        
-        # Update duplicate_db for compatibility
-        self.duplicate_db = {}
+
+        # CRITICAL FIX: Update duplicate_db WITHOUT clearing it first
+        # Only update entries that were just processed, preserve all others
         for car_id, history in existing_history.items():
             if history:
                 latest = history[-1]
+                # Update or add entry, but don't clear existing entries
                 self.duplicate_db[car_id] = {
                     'title': latest.get('title', ''),
                     'link': latest.get('link', ''),
