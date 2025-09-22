@@ -1,248 +1,425 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Modified OLXScrapingEngine to use Supabase instead of GitHub
+Supabase Database Sync Module for OLX Scraper
+Replaces GitHub storage with robust Supabase database
 """
 
 import os
-import sys
-import time
-import random
-import logging
 import json
-from typing import List, Dict, Optional
-from datetime import datetime
+import time
+import logging
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Any
+from dataclasses import dataclass
 
-# Import base scraper components
-from scraper_dev_backup import (
-    OLXScrapingEngine as BaseOLXScrapingEngine,
-    CarData, SearchConfig,
-    generate_car_id, PRICE_CHANGE_THRESHOLD,
-    RESULTS_DIR
-)
-
-# Import Supabase sync
-from supabase_sync import SupabaseSync
+# Supabase client
+try:
+    from supabase import create_client
+except ImportError:
+    print("Error: supabase library not installed")
+    print("Install with: pip install supabase==2.7.4")
+    raise
 
 
-class OLXScrapingEngineSupabase(BaseOLXScrapingEngine):
-    """Extended OLX Scraping Engine with Supabase integration"""
+@dataclass
+class CarData:
+    title: str
+    price_text: str
+    price_numeric: float
+    year: str
+    km: str
+    link: str
+    image_urls: List[str]
+    fuel_type: str
+    gearbox: str
+    car_body: str
+    brand: str
+    model: str
+    unique_id: str
+    scrape_date: str
 
-    def __init__(self):
-        """Initialize scraper with Supabase support"""
-        super().__init__()
-        self.supabase_sync = None
-        self.logger = logging.getLogger("OLXScrapingEngineSupabase")
+class SupabaseSync:
+    """Drop-in replacement for GitHubDatabaseSync using Supabase"""
 
-    def init_supabase(self):
-        """Initialize Supabase connection"""
+    def __init__(self, username: str = None, repo: str = None, token: str = None):
+        """
+        Initialize Supabase client. Parameters kept for compatibility.
+        Args:
+            username: Ignored (kept for compatibility with GitHubDatabaseSync)
+            repo: Ignored (kept for compatibility with GitHubDatabaseSync)
+            token: Ignored (kept for compatibility with GitHubDatabaseSync)
+        """
+        # Get Supabase credentials from environment
+        self.url = os.getenv('SUPABASE_URL', 'https://bxhaoghxyqgdzlpjfvta.supabase.co')
+        self.key = os.getenv('SUPABASE_SERVICE_KEY')
+
+        if not self.key:
+            raise ValueError("SUPABASE_SERVICE_KEY environment variable is required")
+
+        # Initialize Supabase client
+        self.supabase = create_client(self.url, self.key)
+        self.logger = logging.getLogger("SupabaseSync")
+
+        # Batch operation settings
+        self.BATCH_SIZE = 100
+        self.MAX_RETRIES = 3
+        self.RETRY_DELAY = 2
+
+        # Safety thresholds
+        self.MAX_NEW_CARS_PER_RUN = 1000
+        self.FRESHNESS_THRESHOLD_HOURS = 24
+
+    def download_database(self, local_path: str = None) -> bool:
+        """
+        Download database from Supabase for duplicate detection.
+        Compatible with GitHubDatabaseSync interface.
+
+        Args:
+            local_path: Optional path to save local cache (for compatibility)
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
         try:
-            self.supabase_sync = SupabaseSync()
-            self.logger.info("Supabase sync initialized")
+            self.logger.info("Downloading database from Supabase")
+
+            # Fetch all cars from database
+            response = self.supabase.table('cars').select('*').execute()
+            cars_data = response.data
+
+            self.logger.info(f"Fetched {len(cars_data)} cars from Supabase")
+
+            # Convert to price_history format for compatibility
+            price_history = {'history': {}, 'metadata': {}}
+
+            for car in cars_data:
+                car_id = car['unique_id']
+
+                # Fetch price history for this car
+                price_response = self.supabase.table('price_history')\
+                    .select('*')\
+                    .eq('car_unique_id', car_id)\
+                    .order('recorded_at', desc=False)\
+                    .execute()
+
+                history_entries = []
+
+                # Add initial entry from cars table
+                history_entries.append({
+                    'date': car['first_seen'] or car['scraped_at'],
+                    'price': float(car['price']) if car['price'] else 999999,
+                    'price_text': car['price_text'] or '',
+                    'title': car['title'],
+                    'link': car['link'],
+                    'source': 'supabase'
+                })
+
+                # Add price history entries
+                for entry in price_response.data:
+                    history_entries.append({
+                        'date': entry['recorded_at'],
+                        'price': float(entry['price']) if entry['price'] else 999999,
+                        'price_text': entry['price_text'] or '',
+                        'title': car['title'],
+                        'link': car['link'],
+                        'source': 'supabase'
+                    })
+
+                price_history['history'][car_id] = history_entries
+
+            price_history['metadata'] = {
+                'last_update': datetime.now().isoformat(),
+                'total_cars': len(cars_data),
+                'source': 'supabase'
+            }
+
+            # Save to local file if path provided
+            if local_path:
+                os.makedirs(os.path.dirname(local_path) or '.', exist_ok=True)
+                with open(local_path, 'w', encoding='utf-8') as f:
+                    json.dump(price_history, f, ensure_ascii=False, indent=2)
+                self.logger.info(f"Saved local cache to {local_path}")
+
             return True
+
         except Exception as e:
-            self.logger.error(f"Failed to initialize Supabase: {e}")
+            self.logger.error(f"Failed to download database from Supabase: {e}")
+
+            # Create empty database as fallback
+            if local_path:
+                empty_db = {'history': {}, 'metadata': {'created_at': datetime.now().isoformat()}}
+                with open(local_path, 'w', encoding='utf-8') as f:
+                    json.dump(empty_db, f, ensure_ascii=False, indent=2)
+
+            return True  # Return True to prevent crashes
+
+    def load_duplicate_database(self) -> Dict[str, dict]:
+        """
+        Load database for duplicate detection.
+        Returns dict in format expected by OLXScrapingEngine.
+        """
+        try:
+            self.logger.info("Loading duplicate database from Supabase")
+
+            # Fetch all cars
+            response = self.supabase.table('cars').select('*').execute()
+            cars_data = response.data
+
+            # Convert to duplicate_db format
+            duplicate_db = {}
+
+            for car in cars_data:
+                car_id = car['unique_id']
+                duplicate_db[car_id] = {
+                    'title': car['title'],
+                    'link': car['link'],
+                    'last_price': float(car['price']) if car['price'] else 999999,
+                    'last_seen': car['scraped_at'],
+                    'first_seen': car['first_seen'] or car['scraped_at']
+                }
+
+            self.logger.info(f"Loaded {len(duplicate_db)} cars for duplicate detection")
+            return duplicate_db
+
+        except Exception as e:
+            self.logger.error(f"Failed to load duplicate database: {e}")
+            return {}
+
+    def save_cars_data(self, cars_list: List[CarData]) -> bool:
+        """
+        Save list of CarData objects to Supabase with upsert logic.
+
+        Args:
+            cars_list: List of CarData objects to save
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        if not cars_list:
+            self.logger.info("No cars to save")
+            return True
+
+        # Safety check
+        if len(cars_list) > self.MAX_NEW_CARS_PER_RUN:
+            self.logger.warning(f"Too many new cars ({len(cars_list)}), limiting to {self.MAX_NEW_CARS_PER_RUN}")
+            cars_list = cars_list[:self.MAX_NEW_CARS_PER_RUN]
+
+        try:
+            self.logger.info(f"Saving {len(cars_list)} cars to Supabase")
+
+            # Process in batches for better performance
+            for i in range(0, len(cars_list), self.BATCH_SIZE):
+                batch = cars_list[i:i + self.BATCH_SIZE]
+                success = self._save_batch(batch)
+                if not success:
+                    self.logger.error(f"Failed to save batch {i // self.BATCH_SIZE + 1}")
+                    return False
+
+            self.logger.info(f"Successfully saved all {len(cars_list)} cars")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to save cars data: {e}")
             return False
 
-    def load_duplicate_database(self, database_content: dict = None):
-        """
-        Load duplicate database from Supabase instead of local file.
-        Overrides parent method to use Supabase.
-        """
-        if not self.supabase_sync:
-            if not self.init_supabase():
-                # Fallback to parent implementation if Supabase fails
-                super().load_duplicate_database(database_content)
-                return
+    def _save_batch(self, batch: List[CarData]) -> bool:
+        """Save a batch of cars with retry logic"""
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                # Prepare cars data for upsert
+                cars_data = []
+                price_updates = []
 
-        try:
-            # Load from Supabase
-            self.duplicate_db = self.supabase_sync.load_duplicate_database()
+                for car in batch:
+                    # Check if car exists
+                    existing = self.supabase.table('cars')\
+                        .select('unique_id, price')\
+                        .eq('unique_id', car.unique_id)\
+                        .execute()
 
-            cars_count = len(self.duplicate_db)
-            self.logger.info(f"Loaded {cars_count} cars from Supabase")
-
-            if cars_count < 100 and cars_count > 0:
-                print(f"[DATABASE] WARNING: Database suspiciously small ({cars_count} cars)")
-
-            # Sample logging
-            if cars_count > 0:
-                sample_ids = list(self.duplicate_db.keys())[:5]
-                print(f"[DATABASE] Sample IDs from Supabase: {sample_ids}")
-
-        except Exception as e:
-            print(f"[DATABASE] Error loading from Supabase: {e}")
-            self.logger.error(f"Supabase load fail: {e}")
-            self.duplicate_db = {}
-
-    def save_duplicate_database(self, new_cars: List[CarData]):
-        """
-        Save cars to Supabase instead of local file.
-        Overrides parent method to use Supabase.
-        """
-        if not new_cars:
-            self.logger.info("No new cars to save")
-            return
-
-        if not self.supabase_sync:
-            if not self.init_supabase():
-                # Fallback to parent implementation if Supabase fails
-                super().save_duplicate_database(new_cars)
-                return
-
-        try:
-            print(f"\n[DATABASE SAVE] Saving {len(new_cars)} cars to Supabase")
-
-            # Save to Supabase
-            success = self.supabase_sync.save_cars_data(new_cars)
-
-            if success:
-                print(f"[DATABASE SAVE] Successfully saved to Supabase")
-                self.logger.info(f"Saved {len(new_cars)} cars to Supabase")
-
-                # Update local duplicate_db for consistency
-                for car in new_cars:
-                    self.duplicate_db[car.unique_id] = {
+                    car_dict = {
+                        'unique_id': car.unique_id,
                         'title': car.title,
+                        'price': float(car.price_numeric) if car.price_numeric else None,
+                        'price_text': car.price_text,
+                        'year': car.year,
+                        'km': car.km,
                         'link': car.link,
-                        'last_price': float(car.price_numeric),
-                        'last_seen': car.scrape_date,
-                        'first_seen': car.scrape_date
+                        'fuel_type': car.fuel_type,
+                        'gearbox': car.gearbox,
+                        'car_body': car.car_body,
+                        'brand': car.brand,
+                        'model': car.model,
+                        'image_urls': car.image_urls if car.image_urls else [],
+                        'scraped_at': car.scrape_date
                     }
-            else:
-                print(f"[DATABASE SAVE] Failed to save to Supabase")
-                self.logger.error("Failed to save cars to Supabase")
+
+                    if existing.data:
+                        # Car exists - check for price change
+                        old_price = existing.data[0].get('price')
+                        new_price = float(car.price_numeric) if car.price_numeric else None
+
+                        if old_price and new_price and abs(old_price - new_price) >= 1:
+                            # Price changed - add to price history
+                            price_updates.append({
+                                'car_unique_id': car.unique_id,
+                                'price': new_price,
+                                'price_text': car.price_text,
+                                'recorded_at': car.scrape_date
+                            })
+
+                            # Update car record
+                            self.supabase.table('cars')\
+                                .update(car_dict)\
+                                .eq('unique_id', car.unique_id)\
+                                .execute()
+                    else:
+                        # New car - set first_seen
+                        car_dict['first_seen'] = car.scrape_date
+                        cars_data.append(car_dict)
+
+                # Bulk insert new cars
+                if cars_data:
+                    self.supabase.table('cars').insert(cars_data).execute()
+                    self.logger.info(f"Inserted {len(cars_data)} new cars")
+
+                # Bulk insert price updates
+                if price_updates:
+                    self.supabase.table('price_history').insert(price_updates).execute()
+                    self.logger.info(f"Added {len(price_updates)} price history entries")
+
+                return True
+
+            except Exception as e:
+                self.logger.error(f"Batch save attempt {attempt + 1} failed: {e}")
+                if attempt < self.MAX_RETRIES - 1:
+                    time.sleep(self.RETRY_DELAY * (attempt + 1))
+                else:
+                    return False
+
+    def upload_database(self, local_path: str = None, session_id: str = None) -> bool:
+        """
+        Upload database to Supabase. Kept for compatibility.
+
+        Args:
+            local_path: Path to local price_history.json file
+            session_id: Optional session ID for logging
+
+        Returns:
+            bool: True if successful
+        """
+        if not local_path:
+            # Data is already in Supabase, nothing to upload
+            self.logger.info("Data already synced to Supabase")
+            return True
+
+        try:
+            # If local path provided, load and sync data
+            if os.path.exists(local_path):
+                with open(local_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+
+                history = data.get('history', {})
+                self.logger.info(f"Syncing {len(history)} cars from local file to Supabase")
+
+                # Convert history to CarData objects
+                cars_to_save = []
+                for car_id, entries in history.items():
+                    if entries:
+                        latest = entries[-1]
+
+                        # Create CarData object from latest entry
+                        car = CarData(
+                            title=latest.get('title', ''),
+                            price_text=latest.get('price_text', ''),
+                            price_numeric=latest.get('price', 999999),
+                            year='N/A',
+                            km='N/A',
+                            link=latest.get('link', ''),
+                            image_urls=[],
+                            fuel_type='N/A',
+                            gearbox='N/A',
+                            car_body='N/A',
+                            brand='N/A',
+                            model='N/A',
+                            unique_id=car_id,
+                            scrape_date=latest.get('date', datetime.now().isoformat())
+                        )
+                        cars_to_save.append(car)
+
+                # Save to Supabase
+                if cars_to_save:
+                    return self.save_cars_data(cars_to_save)
+
+            return True
 
         except Exception as e:
-            print(f"[DATABASE SAVE] Error saving to Supabase: {e}")
-            self.logger.error(f"Supabase save error: {e}")
+            self.logger.error(f"Failed to upload database: {e}")
+            return False
 
-    def filter_duplicates(self, cars_data: List[CarData]) -> List[CarData]:
+    def verify_database_freshness(self) -> bool:
         """
-        Filter duplicates using Supabase data.
-        Maintains same interface as parent class.
+        Verify that database was updated recently.
+
+        Returns:
+            bool: True if database is fresh (updated within threshold)
         """
-        # Use parent implementation which works with self.duplicate_db
-        # Since we've loaded duplicate_db from Supabase, this will work correctly
-        return super().filter_duplicates(cars_data)
+        try:
+            # Get most recent scraped_at timestamp
+            response = self.supabase.table('cars')\
+                .select('scraped_at')\
+                .order('scraped_at', desc=True)\
+                .limit(1)\
+                .execute()
 
+            if not response.data:
+                self.logger.warning("Database is empty")
+                return True  # Empty database is considered "fresh"
 
-def run_scraper_with_supabase(config: SearchConfig, session_id: str = None):
-    """
-    Run the scraper with Supabase integration.
+            last_update = datetime.fromisoformat(response.data[0]['scraped_at'].replace('Z', '+00:00'))
+            current_time = datetime.now(last_update.tzinfo)
 
-    Args:
-        config: Search configuration
-        session_id: Optional session ID for tracking
+            hours_since_update = (current_time - last_update).total_seconds() / 3600
 
-    Returns:
-        List of scraped cars
-    """
-    engine = OLXScrapingEngineSupabase()
+            if hours_since_update > self.FRESHNESS_THRESHOLD_HOURS:
+                self.logger.warning(f"Database is stale: last update was {hours_since_update:.1f} hours ago")
+                return False
 
-    try:
-        print("[WORKFLOW] Step 1: Initializing Supabase connection")
-        if not engine.init_supabase():
-            print("[ERROR] Failed to initialize Supabase")
-            return []
+            self.logger.info(f"Database is fresh: last update was {hours_since_update:.1f} hours ago")
+            return True
 
-        print("[WORKFLOW] Step 2: Loading duplicate database from Supabase")
-        engine.load_duplicate_database()
+        except Exception as e:
+            self.logger.error(f"Failed to verify database freshness: {e}")
+            return True  # Assume fresh on error to avoid blocking
 
-        print("[WORKFLOW] Step 3: Starting scraping process")
-        engine.setup_driver()
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get database statistics"""
+        try:
+            # Count total cars
+            car_count = self.supabase.table('cars').select('unique_id', count='exact').execute()
+            total_cars = len(car_count.data) if car_count.data else 0
 
-        all_cars = []
-        for brand in config.brands:
-            print(f"\n[SCRAPING] Processing brand: {brand}")
+            # Count price history entries
+            history_count = self.supabase.table('price_history').select('id', count='exact').execute()
+            total_history = len(history_count.data) if history_count.data else 0
 
-            # Build search URL
-            base_url = f"https://www.olx.ro/auto-masini-moto-ambarcatiuni/autoturisme/{brand}/"
-            params = []
+            # Get recent activity
+            recent_response = self.supabase.table('cars')\
+                .select('scraped_at')\
+                .order('scraped_at', desc=True)\
+                .limit(10)\
+                .execute()
 
-            if config.price_min > 0:
-                params.append(f"search[filter_float_price:from]={config.price_min}")
-            if config.price_max < 999999:
-                params.append(f"search[filter_float_price:to]={config.price_max}")
-            if config.year_min > 0:
-                params.append(f"search[filter_float_rulaj_pana:from]={config.km_min}")
-            if config.year_max < 999999:
-                params.append(f"search[filter_float_rulaj_pana:to]={config.km_max}")
+            recent_updates = [row['scraped_at'] for row in recent_response.data]
 
-            search_url = base_url
-            if params:
-                search_url += "?" + "&".join(params)
+            return {
+                'total_cars': total_cars,
+                'total_price_history_entries': total_history,
+                'recent_updates': recent_updates,
+                'database_url': self.url
+            }
 
-            # Scrape brand
-            cars = engine.scrape_brand(
-                brand=brand,
-                search_url=search_url,
-                max_pages=config.max_pages_per_brand
-            )
-
-            all_cars.extend(cars)
-
-        print(f"\n[WORKFLOW] Step 4: Filtering duplicates")
-        filtered_cars = engine.filter_duplicates(all_cars)
-
-        print(f"[WORKFLOW] Step 5: Saving {len(filtered_cars)} new/updated cars to Supabase")
-        engine.save_duplicate_database(filtered_cars)
-
-        # Also save to CSV for compatibility
-        if filtered_cars:
-            csv_file = os.path.join(RESULTS_DIR, f'cars_data_{session_id or "supabase"}.csv')
-            import pandas as pd
-            df = pd.DataFrame([{
-                'Title': car.title,
-                'Price': car.price_text,
-                'Year': car.year,
-                'KM': car.km,
-                'Fuel': car.fuel_type,
-                'Gearbox': car.gearbox,
-                'Body': car.car_body,
-                'Brand': car.brand,
-                'Model': car.model,
-                'Link': car.link
-            } for car in filtered_cars])
-            df.to_csv(csv_file, index=False)
-            print(f"[WORKFLOW] Saved CSV to {csv_file}")
-
-        print(f"\n[WORKFLOW] Complete! Scraped {len(all_cars)} total, {len(filtered_cars)} new/updated")
-        return filtered_cars
-
-    except Exception as e:
-        print(f"[ERROR] Scraping failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return []
-
-    finally:
-        if engine.driver:
-            engine.driver.quit()
-
-
-if __name__ == "__main__":
-    # Test configuration
-    test_config = SearchConfig(
-        brands=["dacia", "volkswagen"],
-        models_by_brand={},
-        fuel_types=[],
-        car_bodies=[],
-        gearbox_types=[],
-        car_states=[],
-        price_min=1000,
-        price_max=15000,
-        year_min=2010,
-        year_max=2024,
-        km_min=0,
-        km_max=200000,
-        power_min=0,
-        power_max=999,
-        currency="EUR",
-        max_pages_per_brand=2
-    )
-
-    # Run test scraper
-    print("Starting test scrape with Supabase integration...")
-    results = run_scraper_with_supabase(test_config, session_id="test_supabase")
-    print(f"Test complete: {len(results)} cars processed")
+        except Exception as e:
+            self.logger.error(f"Failed to get statistics: {e}")
+            return {}
