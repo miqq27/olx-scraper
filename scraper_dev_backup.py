@@ -30,6 +30,29 @@ import uuid
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Set, Tuple
 from datetime import datetime, timedelta
+# Import CarData from supabase_sync instead of defining it here
+try:
+    from supabase_sync import CarData
+except ImportError:
+    # Fallback definition if supabase_sync not available
+    @dataclass
+    class CarData:
+        title: str
+        price_text: str
+        price_numeric: float
+        year: str
+        km: str
+        link: str
+        image_urls: List[str]
+        fuel_type: str
+        gearbox: str
+        car_body: str
+        brand: str
+        model: str
+        unique_id: str
+        scrape_date: str
+        published_date: str = "N/A"
+        session_id: str = ""
 
 # Platform-specific imports
 try:
@@ -467,23 +490,6 @@ class SearchConfig:
     power_max: int
     currency: str
     max_pages_per_brand: int
-
-@dataclass
-class CarData:
-    title: str
-    price_text: str
-    price_numeric: float
-    year: str
-    km: str
-    link: str
-    image_urls: List[str]
-    fuel_type: str
-    gearbox: str
-    car_body: str
-    brand: str
-    model: str
-    unique_id: str
-    scrape_date: str
 
 # ---------- Utilitare ----------
 def generate_car_id(link: str, title: str = "") -> str:
