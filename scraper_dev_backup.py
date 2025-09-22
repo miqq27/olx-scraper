@@ -1333,7 +1333,7 @@ class OLXScrapingEngine:
             self.logger.error(f"Failed brand {brand}: {e}")
             return []
     
-    def enrich_car_data(self, basic_cars: List[dict], progress_callback=None) -> List[CarData]:
+    def enrich_car_data(self, basic_cars: List[dict], session_id: str = "", progress_callback=None) -> List[CarData]:
         enriched = []
         total = len(basic_cars)
         for i, cb in enumerate(basic_cars):
@@ -1341,7 +1341,7 @@ class OLXScrapingEngine:
             try:
                 if progress_callback:
                     progress_callback(f"Enrich {i+1}/{total}", 50 + int(((i+1)/max(1,total))*50))
-                det = self.car_extractor.extract_individual_car_data(cb['link'])
+                det = self.car_extractor.extract_individual_car_data(cb['link'], session_id)
                 brand, model = self.extract_brand_and_model_from_title(cb.get('title',''))
                 car = CarData(
                     title = cb.get('title','Unknown Car'),
@@ -1357,7 +1357,9 @@ class OLXScrapingEngine:
                     brand = brand,
                     model = model,
                     unique_id = generate_car_id(cb.get('link',''), cb.get('title','')),
-                    scrape_date = datetime.now().isoformat()
+                    scrape_date = datetime.now().isoformat(),
+                    published_date = det.get('published_date', 'N/A'),
+                    session_id = session_id
                 )
                 enriched.append(car)
                 self.session_stats['new_cars'] += 1
@@ -1370,8 +1372,11 @@ class OLXScrapingEngine:
         if not self.setup_driver():
             return []
 
+        # Generate unique session ID at start of scraping
+        session_id = f"scraping_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        print(f"[SESSION] Starting scraping session: {session_id}")
+
         # Create lock file with session info
-        session_id = str(uuid.uuid4())
         lock_file = os.path.join(RESULTS_DIR, '.scraping_lock')
         timestamp = datetime.now().isoformat()
 
@@ -1396,7 +1401,7 @@ class OLXScrapingEngine:
                 self.logger.warning("[WARNING] No cars with current filters")
                 return []
             if progress_callback: progress_callback("Enriching details…", 60)
-            enriched = self.enrich_car_data(all_basic, progress_callback)
+            enriched = self.enrich_car_data(all_basic, session_id, progress_callback)
             self.save_duplicate_database(enriched)
             if progress_callback: progress_callback("Done!", 100)
             self.logger.info(f"Done. Stats: {self.session_stats}")
