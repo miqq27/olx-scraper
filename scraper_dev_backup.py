@@ -536,7 +536,7 @@ class CarDataExtractor:
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
         self.logger = logging.getLogger("CarDataExtractor")
     
-    def extract_individual_car_data(self, link: str) -> dict:
+    def extract_individual_car_data(self, link: str, session_id: str = "") -> dict:
         try:
             safe_delay(SAFETY_DELAYS['individual_car'])
             headers = {"User-Agent": get_random_user_agent()}
